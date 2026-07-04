@@ -97,8 +97,9 @@ canvas{-webkit-touch-callout:none}
   padding:10px 16px;z-index:5;
 }
 #selBar.show{display:flex}
+#selBar{flex-wrap:wrap;justify-content:center;max-width:calc(100% - 24px)}
 #selBar label{font-size:13px;font-weight:800;color:var(--ink-soft);display:flex;align-items:center;gap:8px}
-#selBar input[type=range]{width:110px}
+#selBar input[type=range]{width:95px}
 #selBar .done{
   background:var(--green);color:#fff;font-weight:800;font-size:14px;
   padding:8px 16px;border-radius:999px;
@@ -391,6 +392,7 @@ body.pixel .no-pixel{display:none}
     <canvas id="overlay" width="1280" height="960"></canvas>
   </div>
   <div id="selBar">
+    <label>Size <input type="range" id="selSize" min="25" max="300" value="100"></label>
     <label>Opacity <input type="range" id="selAlpha" min="5" max="100" value="100"></label>
     <button class="done" id="selDone">✓ Done</button>
   </div>
@@ -1325,7 +1327,7 @@ function drawSelRect(){
   if (!sel) return;
   if (sel.buf){
     octx.globalAlpha = sel.alpha;
-    octx.drawImage(sel.buf, sel.x, sel.y);
+    octx.drawImage(sel.buf, sel.x, sel.y, sel.w, sel.h);
     octx.globalAlpha = 1;
   }
   octx.setLineDash([10, 7]);
@@ -1345,6 +1347,8 @@ function liftSelection(){
   l.cv.getContext('2d').clearRect(sel.x, sel.y, sel.w, sel.h);
   invalidate(l);
   sel.buf = buf;
+  sel.baseW = sel.w;
+  sel.baseH = sel.h;
   render();
 }
 function commitSelection(){
@@ -1354,7 +1358,7 @@ function commitSelection(){
   if (sel.buf){
     const ctx = curLayer().cv.getContext('2d');
     ctx.globalAlpha = sel.alpha;
-    ctx.drawImage(sel.buf, sel.x, sel.y);
+    ctx.drawImage(sel.buf, sel.x, sel.y, sel.w, sel.h);
     ctx.globalAlpha = 1;
     invalidate(curLayer());
   }
@@ -1369,6 +1373,17 @@ $('#selAlpha').addEventListener('input', e => {
   if (!sel) return;
   liftSelection();
   sel.alpha = e.target.value / 100;
+  drawSelRect();
+});
+$('#selSize').addEventListener('input', e => {
+  if (!sel) return;
+  liftSelection();
+  const v = e.target.value / 100;
+  const cx = sel.x + sel.w / 2, cy = sel.y + sel.h / 2;
+  sel.w = Math.max(8, sel.baseW * v);
+  sel.h = Math.max(8, sel.baseH * v);
+  sel.x = cx - sel.w / 2;
+  sel.y = cy - sel.h / 2;
   drawSelRect();
 });
 $('#selBar').addEventListener('pointerdown', e => e.stopPropagation());
@@ -1444,7 +1459,7 @@ function wandSelect(p){
   buf.getContext('2d').putImageData(bimg, 0, 0);
   ctx.putImageData(img, 0, 0);
   invalidate(l);
-  sel = { x: minX, y: minY, w: bw, h: bh, buf, alpha: 1 };
+  sel = { x: minX, y: minY, w: bw, h: bh, buf, alpha: 1, baseW: bw, baseH: bh };
   render();
   drawSelRect();
   return true;
@@ -1468,7 +1483,7 @@ FONTS.forEach((f, i) => {
   $('#textFont').appendChild(o);
 });
 function textFontCss(){
-  return '700 ' + TEXT_SIZES[textSession.size] + 'px ' + FONTS[textSession.font].family;
+  return '700 ' + Math.round(textSession.px) + 'px ' + FONTS[textSession.font].family;
 }
 function renderTextPreview(){
   if (!textSession) return;
@@ -1484,7 +1499,7 @@ function renderTextPreview(){
 }
 function openTextSession(p){
   commitSelection();
-  textSession = { x: p.x, y: p.y, str: '', font: +$('#textFont').value || 0, size: 1 };
+  textSession = { x: p.x, y: p.y, str: '', font: +$('#textFont').value || 0, px: TEXT_SIZES[1] };
   $('#textInput').value = '';
   $$('#textBar .tsz').forEach(b => b.classList.toggle('on', +b.dataset.tsz === 1));
   $('#textBar').classList.add('show');
@@ -1500,7 +1515,7 @@ function closeTextSession(commit){
   if (commit && ts && ts.str.trim()){
     beginPaintOp();
     const ctx = curLayer().cv.getContext('2d');
-    ctx.font = '700 ' + TEXT_SIZES[ts.size] + 'px ' + FONTS[ts.font].family;
+    ctx.font = '700 ' + Math.round(ts.px) + 'px ' + FONTS[ts.font].family;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillStyle = state.color;
@@ -1532,7 +1547,7 @@ $('#textFont').addEventListener('change', e => {
 });
 $$('#textBar .tsz').forEach(b => b.addEventListener('click', () => {
   if (!textSession) return;
-  textSession.size = +b.dataset.tsz;
+  textSession.px = TEXT_SIZES[+b.dataset.tsz];
   $$('#textBar .tsz').forEach(x => x.classList.toggle('on', x === b));
   renderTextPreview();
 }));
@@ -1543,14 +1558,166 @@ let drawing = false, activePointer = null, last = null, startPt = null, lastCell
 let selDrag = null; // 'marquee' | 'move'
 let selStart = null; // selection position at drag start (absolute dragging)
 let moveBuf = null, moveStart = null, moveCentre = null; // move-layer tool state
+let moveOff = { dx: 0, dy: 0 };
+
+/* ---- pinch to resize (and wheel on desktop) ---- */
+const pointers = new Map();
+let pinch = null;
+let wheelScale = 1, wheelTimer = null;
+function pDist(a, b){ return Math.hypot(a.x - b.x, a.y - b.y) || 1; }
+function pMid(a, b){ return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }; }
+function ensureLayerGesture(){
+  if (moveBuf) return;
+  commitSelection();
+  beginPaintOp();
+  moveCentre = layerContentCentre(curLayer().cv);
+  moveBuf = document.createElement('canvas');
+  moveBuf.width = W; moveBuf.height = H;
+  moveBuf.getContext('2d').drawImage(curLayer().cv, 0, 0);
+  moveOff = { dx: 0, dy: 0 };
+}
+function drawLayerTransformed(s, off){
+  const cx = moveCentre ? moveCentre.cx : W / 2, cy = moveCentre ? moveCentre.cy : H / 2;
+  const ctx = curLayer().cv.getContext('2d');
+  ctx.clearRect(0, 0, W, H);
+  ctx.save();
+  ctx.translate(cx + off.dx, cy + off.dy);
+  ctx.scale(s, s);
+  ctx.translate(-cx, -cy);
+  ctx.drawImage(moveBuf, 0, 0);
+  ctx.restore();
+  invalidate(curLayer());
+  render();
+  octx.clearRect(0, 0, W, H);
+  drawGuides(octx);
+}
+function endLayerGesture(){
+  moveBuf = null;
+  moveCentre = null;
+  moveOff = { dx: 0, dy: 0 };
+  wheelScale = 1;
+  guideV = guideH = false;
+  octx.clearRect(0, 0, W, H);
+  renderTimeline();
+  renderLayers();
+  scheduleAutosave();
+}
+function tryStartPinch(){
+  const [a, b] = [...pointers.values()];
+  let type = null;
+  if (state.tool === 'move') type = 'layer';
+  else if ((state.tool === 'select' || state.tool === 'wand') && sel && (sel.buf || (sel.w > 7 && sel.h > 7))){
+    liftSelection();
+    type = 'sel';
+  }
+  else if (state.tool === 'text' && textSession) type = 'text';
+  if (!type) return false;
+  if (type === 'layer') ensureLayerGesture();
+  pinch = {
+    type,
+    startDist: pDist(a, b),
+    startMid: pMid(a, b),
+    baseOff: { ...moveOff },
+    baseSel: sel ? { x: sel.x, y: sel.y, w: sel.w, h: sel.h } : null,
+    baseText: textSession ? { x: textSession.x, y: textSession.y, px: textSession.px } : null
+  };
+  drawing = false; // the pinch owns the gesture now
+  selDrag = null;
+  return true;
+}
+function updatePinch(){
+  if (!pinch || pointers.size < 2) return;
+  const [a, b] = [...pointers.values()];
+  const s = Math.min(5, Math.max(0.2, pDist(a, b) / pinch.startDist));
+  const mid = pMid(a, b);
+  const mdx = mid.x - pinch.startMid.x, mdy = mid.y - pinch.startMid.y;
+  if (pinch.type === 'layer'){
+    if (!moveBuf) return;
+    const cx = moveCentre ? moveCentre.cx : W / 2, cy = moveCentre ? moveCentre.cy : H / 2;
+    let dx = pinch.baseOff.dx + mdx, dy = pinch.baseOff.dy + mdy;
+    guideV = Math.abs(cx + dx - W / 2) <= SNAP;
+    guideH = Math.abs(cy + dy - H / 2) <= SNAP;
+    if (guideV) dx = W / 2 - cx;
+    if (guideH) dy = H / 2 - cy;
+    moveOff = { dx, dy };
+    drawLayerTransformed(s, moveOff);
+  } else if (pinch.type === 'sel' && sel){
+    sel.w = Math.max(8, pinch.baseSel.w * s);
+    sel.h = Math.max(8, pinch.baseSel.h * s);
+    let cx = pinch.baseSel.x + pinch.baseSel.w / 2 + mdx;
+    let cy = pinch.baseSel.y + pinch.baseSel.h / 2 + mdy;
+    guideV = Math.abs(cx - W / 2) <= SNAP;
+    guideH = Math.abs(cy - H / 2) <= SNAP;
+    if (guideV) cx = W / 2;
+    if (guideH) cy = H / 2;
+    sel.x = cx - sel.w / 2;
+    sel.y = cy - sel.h / 2;
+    drawSelRect();
+  } else if (pinch.type === 'text' && textSession){
+    textSession.px = Math.min(400, Math.max(12, pinch.baseText.px * s));
+    let x = pinch.baseText.x + mdx, y = pinch.baseText.y + mdy;
+    guideV = Math.abs(x - W / 2) <= SNAP;
+    guideH = Math.abs(y - H / 2) <= SNAP;
+    if (guideV) x = W / 2;
+    if (guideH) y = H / 2;
+    textSession.x = x;
+    textSession.y = y;
+    renderTextPreview();
+  }
+}
+function endPinch(){
+  if (!pinch) return;
+  const type = pinch.type;
+  pinch = null;
+  guideV = guideH = false;
+  drawing = false;
+  activePointer = null;
+  if (type === 'layer'){
+    endLayerGesture();
+  } else if (type === 'sel' && sel){
+    $('#selSize').value = Math.min(300, Math.max(25, Math.round(sel.w / sel.baseW * 100)));
+    drawSelRect();
+  } else if (type === 'text'){
+    renderTextPreview();
+  }
+}
+ovC.addEventListener('wheel', e => {
+  const factor = e.deltaY < 0 ? 1.06 : 1 / 1.06;
+  if (state.tool === 'text' && textSession){
+    e.preventDefault();
+    textSession.px = Math.min(400, Math.max(12, textSession.px * factor));
+    renderTextPreview();
+  } else if ((state.tool === 'select' || state.tool === 'wand') && sel){
+    e.preventDefault();
+    liftSelection();
+    const cx = sel.x + sel.w / 2, cy = sel.y + sel.h / 2;
+    sel.w = Math.max(8, sel.w * factor);
+    sel.h = Math.max(8, sel.h * factor);
+    sel.x = cx - sel.w / 2;
+    sel.y = cy - sel.h / 2;
+    $('#selSize').value = Math.min(300, Math.max(25, Math.round(sel.w / sel.baseW * 100)));
+    drawSelRect();
+  } else if (state.tool === 'move' && !drawing && !pinch){
+    e.preventDefault();
+    ensureLayerGesture();
+    wheelScale = Math.min(5, Math.max(0.2, wheelScale * factor));
+    drawLayerTransformed(wheelScale, moveOff);
+    clearTimeout(wheelTimer);
+    wheelTimer = setTimeout(endLayerGesture, 700);
+  }
+}, { passive: false });
 
 ovC.addEventListener('pointerdown', e => {
-  if (drawing) return;
-  if (state.playing){ stopPlayback(); render(); renderTimeline(); return; }
   e.preventDefault();
-  activePointer = e.pointerId;
-  try { ovC.setPointerCapture(e.pointerId); } catch {}
   const p = getPos(e);
+  pointers.set(e.pointerId, p);
+  if (state.playing){ pointers.delete(e.pointerId); stopPlayback(); render(); renderTimeline(); return; }
+  try { ovC.setPointerCapture(e.pointerId); } catch {}
+  if (!pinch && pointers.size === 2 && tryStartPinch()) return;
+  if (pinch) return;
+  if (drawing) return;
+  clearTimeout(wheelTimer);
+  activePointer = e.pointerId;
 
   if (state.tool === 'eyedrop'){ pickColorAt(p); return; }
 
@@ -1598,6 +1765,7 @@ ovC.addEventListener('pointerdown', e => {
       startPt = p;
       selStart = { x: sel.x, y: sel.y };
       $('#selAlpha').value = 100;
+      $('#selSize').value = 100;
       $('#selBar').classList.add('show');
     }
     return;
@@ -1656,6 +1824,12 @@ ovC.addEventListener('pointerdown', e => {
 });
 
 ovC.addEventListener('pointermove', e => {
+  if (pointers.has(e.pointerId)) pointers.set(e.pointerId, getPos(e));
+  if (pinch){
+    e.preventDefault();
+    updatePinch();
+    return;
+  }
   if (!drawing || e.pointerId !== activePointer) return;
   e.preventDefault();
   const coalesced = e.getCoalescedEvents ? e.getCoalescedEvents() : [];
@@ -1703,6 +1877,7 @@ ovC.addEventListener('pointermove', e => {
       if (guideV) dx = W / 2 - moveCentre.cx;
       if (guideH) dy = H / 2 - moveCentre.cy;
     }
+    moveOff = { dx, dy };
     const ctx = curLayer().cv.getContext('2d');
     ctx.clearRect(0, 0, W, H);
     ctx.drawImage(moveBuf, dx, dy);
@@ -1753,6 +1928,11 @@ ovC.addEventListener('pointermove', e => {
 });
 
 function endStroke(e){
+  pointers.delete(e.pointerId);
+  if (pinch){
+    if (pointers.size < 2) endPinch();
+    return;
+  }
   if (!drawing || e.pointerId !== activePointer) return;
   drawing = false;
   activePointer = null;
@@ -1774,6 +1954,7 @@ function endStroke(e){
         sel.x = Math.round(sel.x); sel.y = Math.round(sel.y);
         sel.w = Math.round(sel.w); sel.h = Math.round(sel.h);
         $('#selAlpha').value = 100;
+        $('#selSize').value = 100;
         $('#selBar').classList.add('show');
         drawSelRect();
       }
@@ -1785,13 +1966,7 @@ function endStroke(e){
   }
 
   if (state.tool === 'move'){
-    guideV = guideH = false;
-    octx.clearRect(0, 0, W, H);
-    moveBuf = null;
-    moveCentre = null;
-    renderTimeline();
-    renderLayers();
-    scheduleAutosave();
+    endLayerGesture();
     return;
   }
 
