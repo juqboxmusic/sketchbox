@@ -183,6 +183,8 @@ body.pixel .draw-only{display:none}
 .big-btn.green{background:var(--green);color:#fff}.big-btn.green svg{stroke:#fff}
 .big-btn.red{background:var(--coral);color:#fff}
 .big-btn.plain{background:#F1ECE3;color:var(--ink)}
+.row2{display:flex;gap:12px}
+.row2 .big-btn{flex:1;font-size:15px;padding:14px}
 .confirm-msg{font-size:16.5px;font-weight:600;text-align:center;color:var(--ink);line-height:1.4}
 .confirm-emoji{font-size:44px;text-align:center}
 
@@ -359,6 +361,11 @@ body.pixel .draw-only{display:none}
     <h2>🖼️ My Sketches <button class="close" data-close>✕</button></h2>
     <div id="galleryGrid"></div>
     <button class="big-btn plain" id="newSketchBtn">✨ New blank sketch</button>
+    <div class="row2">
+      <button class="big-btn plain" id="backupBtn">💾 Backup to file</button>
+      <button class="big-btn plain" id="restoreBtn">📂 Load backup</button>
+    </div>
+    <input type="file" id="restoreFile" accept=".json,application/json" hidden>
   </div>
 </div>
 
@@ -1026,6 +1033,100 @@ $('#newSketchBtn').addEventListener('click', () => {
     closeModals();
     toast('Fresh canvas! ✨');
   });
+});
+
+/* ============== backup / restore ============== */
+function looksNonEmpty(doc){
+  return (doc.cells && doc.cells.some(Boolean)) || (doc.draw && doc.draw.length > 10000);
+}
+function makeThumbFromDoc(doc){
+  return new Promise(res => {
+    const t = document.createElement('canvas');
+    t.width = 200; t.height = 150;
+    const tc = t.getContext('2d');
+    tc.fillStyle = '#FFFFFF';
+    tc.fillRect(0, 0, 200, 150);
+    const finish = () => res(t.toDataURL('image/jpeg', 0.6));
+    if (doc.mode === 'pixel' && doc.cells){
+      const n = doc.grid || 16, cell = 150 / n, ox = (200 - 150) / 2;
+      for (let y = 0; y < n; y++)
+        for (let x = 0; x < n; x++){
+          const c = doc.cells[y * n + x];
+          if (c){ tc.fillStyle = c; tc.fillRect(ox + x * cell, y * cell, cell + 0.5, cell + 0.5); }
+        }
+      finish();
+    } else if (doc.draw){
+      const img = new Image();
+      img.onload = () => {
+        const s = Math.min(200 / img.width, 150 / img.height);
+        tc.drawImage(img, (200 - img.width * s) / 2, (150 - img.height * s) / 2, img.width * s, img.height * s);
+        finish();
+      };
+      img.onerror = finish;
+      img.src = doc.draw;
+    } else finish();
+  });
+}
+$('#backupBtn').addEventListener('click', () => {
+  let autosave = null;
+  try { autosave = JSON.parse(localStorage.getItem(LS_AUTOSAVE)); } catch {}
+  const payload = {
+    app: 'sketchbox', backupVersion: 1,
+    exportedAt: new Date().toISOString(),
+    gallery: getGallery(),
+    current: autosave
+  };
+  const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
+  const a = document.createElement('a');
+  const d = new Date();
+  a.download = 'sketchbox-backup-' + d.getFullYear() + String(d.getMonth() + 1).padStart(2, '0') + String(d.getDate()).padStart(2, '0') + '.json';
+  a.href = URL.createObjectURL(blob);
+  a.click();
+  URL.revokeObjectURL(a.href);
+  toast('Backup file saved! 💾');
+});
+$('#restoreBtn').addEventListener('click', () => $('#restoreFile').click());
+$('#restoreFile').addEventListener('change', e => {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = async () => {
+    let data;
+    try { data = JSON.parse(reader.result); } catch { toast("That file isn't a SketchBox backup 😕"); return; }
+    if (!data || data.app !== 'sketchbox' || !Array.isArray(data.gallery)){
+      toast("That file isn't a SketchBox backup 😕");
+      return;
+    }
+    // merge only: never remove or overwrite what's already here
+    const list = getGallery();
+    const have = new Set(list.map(i => i.id));
+    let added = 0;
+    for (const item of data.gallery){
+      if (item && item.id && item.data && item.thumb && !have.has(item.id)){
+        list.push(item);
+        have.add(item.id);
+        added++;
+      }
+    }
+    // unsaved work-in-progress inside the backup: rescue it as its own sketch
+    if (data.current && !data.current.docId && looksNonEmpty(data.current)){
+      const rid = 'rescue-' + (data.exportedAt || 'unknown');
+      if (!have.has(rid)){
+        list.push({
+          id: rid, name: 'Rescued sketch', date: '',
+          thumb: await makeThumbFromDoc(data.current),
+          data: { ...data.current, docId: rid }
+        });
+        added++;
+      }
+    }
+    try { setGallery(list); }
+    catch { toast('Storage is full 😕 — try deleting old sketches'); return; }
+    renderGallery();
+    toast(added ? 'Added ' + added + ' sketch' + (added === 1 ? '' : 'es') + '! 🎉' : 'All those sketches are already here ✅');
+  };
+  reader.readAsText(file);
 });
 
 /* ============== export ============== */
