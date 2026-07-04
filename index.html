@@ -477,6 +477,9 @@ body.pixel .no-pixel{display:none}
       <svg viewBox="0 0 24 24" fill="none" stroke-width="2.2" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11"/><path d="M7 11l5 5 5-5"/><path d="M4 20h16"/></svg>
       Save as JPEG
     </button>
+    <button class="big-btn" id="exportGif" style="background:#8B5CF6;color:#fff">
+      🎬 Save animation as GIF
+    </button>
   </div>
 </div>
 
@@ -1703,7 +1706,11 @@ $('#restoreFile').addEventListener('change', e => {
 });
 
 /* ============== export ============== */
-$('#exportBtn').addEventListener('click', () => { commitSelection(); openModal('#exportModal'); });
+$('#exportBtn').addEventListener('click', () => {
+  commitSelection();
+  $('#exportGif').style.display = frames.length > 1 ? 'flex' : 'none';
+  openModal('#exportModal');
+});
 function exportImage(type){
   const out = document.createElement('canvas');
   out.width = W; out.height = H;
@@ -1724,6 +1731,132 @@ function exportImage(type){
 }
 $('#exportPng').addEventListener('click', () => exportImage('image/png'));
 $('#exportJpg').addEventListener('click', () => exportImage('image/jpeg'));
+
+/* ============== GIF export (self-contained GIF89a encoder) ============== */
+function lzwEncode(indices, minCodeSize){
+  const out = [];
+  let cur = 0, curShift = 0;
+  let codeSize = minCodeSize + 1;
+  const CLEAR = 1 << minCodeSize, EOI = CLEAR + 1;
+  let next = EOI + 1;
+  let table = new Map();
+  const emit = code => {
+    cur |= code << curShift;
+    curShift += codeSize;
+    while (curShift >= 8){ out.push(cur & 255); cur >>= 8; curShift -= 8; }
+  };
+  emit(CLEAR);
+  let prev = indices[0];
+  for (let i = 1; i < indices.length; i++){
+    const k = indices[i];
+    const key = (prev << 8) | k;
+    const code = table.get(key);
+    if (code !== undefined){ prev = code; continue; }
+    emit(prev);
+    if (next === 4096){ // dictionary full: reset (12-bit code limit)
+      emit(CLEAR);
+      table = new Map();
+      codeSize = minCodeSize + 1;
+      next = EOI + 1;
+    } else {
+      if (next >= (1 << codeSize)) codeSize++;
+      table.set(key, next++);
+    }
+    prev = k;
+  }
+  emit(prev);
+  emit(EOI);
+  if (curShift > 0) out.push(cur & 255);
+  return new Uint8Array(out);
+}
+function encodeGif(frameDatas, w, h, fps){
+  // global palette: the 256 most common colours across all frames (5 bits/channel buckets)
+  const hist = new Map();
+  for (const fd of frameDatas){
+    const d = fd.data;
+    for (let i = 0; i < d.length; i += 8){
+      const key = (d[i] >> 3 << 10) | (d[i + 1] >> 3 << 5) | (d[i + 2] >> 3);
+      hist.set(key, (hist.get(key) || 0) + 1);
+    }
+  }
+  const top = [...hist.entries()].sort((a, b) => b[1] - a[1]).slice(0, 256).map(e => e[0]);
+  const pal = new Uint8Array(768);
+  top.forEach((key, i) => {
+    pal[i * 3]     = (key >> 10 & 31) << 3 | 4;
+    pal[i * 3 + 1] = (key >> 5 & 31) << 3 | 4;
+    pal[i * 3 + 2] = (key & 31) << 3 | 4;
+  });
+  const n = Math.max(1, top.length);
+  const cache = new Map();
+  function nearest(r, g, b){
+    const key = (r >> 3 << 10) | (g >> 3 << 5) | (b >> 3);
+    let idx = cache.get(key);
+    if (idx !== undefined) return idx;
+    let best = 0, bd = Infinity;
+    for (let i = 0; i < n; i++){
+      const dr = pal[i * 3] - r, dg = pal[i * 3 + 1] - g, db = pal[i * 3 + 2] - b;
+      const dist = dr * dr + dg * dg + db * db;
+      if (dist < bd){ bd = dist; best = i; }
+    }
+    cache.set(key, best);
+    return best;
+  }
+  const bytes = [];
+  const push16 = v => bytes.push(v & 255, (v >> 8) & 255);
+  bytes.push(71, 73, 70, 56, 57, 97); // "GIF89a"
+  push16(w); push16(h);
+  bytes.push(0xF7, 0, 0); // global colour table, 256 entries
+  for (let i = 0; i < 768; i++) bytes.push(pal[i]);
+  // loop forever (NETSCAPE2.0 extension)
+  bytes.push(0x21, 0xFF, 0x0B, 78, 69, 84, 83, 67, 65, 80, 69, 50, 46, 48, 3, 1, 0, 0, 0);
+  const delay = Math.max(2, Math.round(100 / fps)); // centiseconds
+  for (const fd of frameDatas){
+    bytes.push(0x21, 0xF9, 4, 4, delay & 255, (delay >> 8) & 255, 0, 0);
+    bytes.push(0x2C); push16(0); push16(0); push16(w); push16(h); bytes.push(0);
+    const d = fd.data;
+    const idx = new Uint8Array(w * h);
+    for (let p = 0, q = 0; p < d.length; p += 4, q++) idx[q] = nearest(d[p], d[p + 1], d[p + 2]);
+    bytes.push(8); // LZW minimum code size
+    const lzw = lzwEncode(idx, 8);
+    for (let off = 0; off < lzw.length; off += 255){
+      const chunk = lzw.subarray(off, Math.min(off + 255, lzw.length));
+      bytes.push(chunk.length);
+      for (let i = 0; i < chunk.length; i++) bytes.push(chunk[i]);
+    }
+    bytes.push(0);
+  }
+  bytes.push(0x3B);
+  return new Uint8Array(bytes);
+}
+const GIF_W = 640, GIF_H = 480;
+function buildGifBlob(){
+  const datas = frames.map(fr => {
+    const c = document.createElement('canvas');
+    c.width = GIF_W; c.height = GIF_H;
+    const x = c.getContext('2d');
+    x.fillStyle = '#FFFFFF';
+    x.fillRect(0, 0, GIF_W, GIF_H);
+    x.save(); x.scale(GIF_W / W, GIF_H / H); drawFrameInto(x, fr); x.restore();
+    return x.getImageData(0, 0, GIF_W, GIF_H);
+  });
+  return new Blob([encodeGif(datas, GIF_W, GIF_H, state.fps)], { type: 'image/gif' });
+}
+$('#exportGif').addEventListener('click', () => {
+  toast('Making your GIF… 🎬');
+  setTimeout(() => { // let the toast paint before the encoder blocks the thread
+    const blob = buildGifBlob();
+    const a = document.createElement('a');
+    const d = new Date();
+    const stamp = d.getFullYear() + String(d.getMonth() + 1).padStart(2, '0') + String(d.getDate()).padStart(2, '0') +
+      '-' + String(d.getHours()).padStart(2, '0') + String(d.getMinutes()).padStart(2, '0');
+    a.download = 'sketchbox-animation-' + stamp + '.gif';
+    a.href = URL.createObjectURL(blob);
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    closeModals();
+    toast('GIF saved! 🎬');
+  }, 60);
+});
 
 /* ============== init ============== */
 (async function init(){
