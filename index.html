@@ -388,11 +388,19 @@ body.pixel .no-pixel{display:none}
       </div>
     </div>
     <div class="pop-section">
-      <div class="pop-title">Select</div>
+      <div class="pop-title">Move &amp; select</div>
       <div class="pop-tools">
-        <button class="tbtn" data-tool="select" aria-label="Select and move">
+        <button class="tbtn" data-tool="move" aria-label="Move the whole layer">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M3 12h18"/><path d="M9 6l3-3 3 3M9 18l3 3 3-3M6 9l-3 3 3 3M18 9l3 3-3 3"/></svg>
+          Move
+        </button>
+        <button class="tbtn" data-tool="select" aria-label="Select a box">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-dasharray="4 3"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>
           Select
+        </button>
+        <button class="tbtn" data-tool="wand" aria-label="Grab an object by its colour">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M4 20l9-9"/><path d="M15 4v4M13 6h4"/><path d="M19 11v3M17.5 12.5h3"/><path d="M10 3v3M8.5 4.5h3"/></svg>
+          Grab
         </button>
       </div>
     </div>
@@ -706,7 +714,7 @@ $('#tabPixel').addEventListener('click', () => setTab('pixel'));
 $('#tabAnim').addEventListener('click', () => setTab('animate'));
 
 /* ============== tools / sizes / colors UI ============== */
-const ADVANCED = [...SHAPES, 'select'];
+const ADVANCED = [...SHAPES, 'select', 'move', 'wand'];
 function setTool(tool){
   if (tool !== state.tool) commitSelection();
   if (state.tool !== 'eyedrop') state.prevTool = state.tool;
@@ -1283,9 +1291,87 @@ $('#selAlpha').addEventListener('input', e => {
 });
 $('#selBar').addEventListener('pointerdown', e => e.stopPropagation());
 
+/* magic grab: lift the connected same-colour region under the tap */
+function wandSelect(p){
+  const l = curLayer();
+  const ctx = l.cv.getContext('2d');
+  const img = ctx.getImageData(0, 0, W, H);
+  const d = img.data;
+  const sx = Math.floor(p.x), sy = Math.floor(p.y);
+  const i0 = (sy * W + sx) * 4;
+  if (d[i0 + 3] < 20){ toast('Tap on a drawing to grab it 🪄'); return false; }
+  const sr = d[i0], sg = d[i0 + 1], sb = d[i0 + 2];
+  const TOL = 130;
+  let mask = new Uint8Array(W * H);
+  const visited = new Uint8Array(W * H);
+  const stack = [sy * W + sx];
+  let minX = sx, maxX = sx, minY = sy, maxY = sy;
+  while (stack.length){
+    const idx = stack.pop();
+    if (visited[idx]) continue;
+    visited[idx] = 1;
+    const i = idx * 4;
+    if (d[i + 3] < 20) continue;
+    if (Math.abs(d[i] - sr) + Math.abs(d[i + 1] - sg) + Math.abs(d[i + 2] - sb) > TOL) continue;
+    mask[idx] = 1;
+    const x = idx % W, y = (idx - x) / W;
+    if (x < minX) minX = x; if (x > maxX) maxX = x;
+    if (y < minY) minY = y; if (y > maxY) maxY = y;
+    if (x > 0) stack.push(idx - 1);
+    if (x < W - 1) stack.push(idx + 1);
+    if (idx >= W) stack.push(idx - W);
+    if (idx < W * (H - 1)) stack.push(idx + W);
+  }
+  // dilate 2px to take the soft anti-aliased fringe along — but never
+  // solid neighbouring artwork of a different colour
+  for (let pass = 0; pass < 2; pass++){
+    const nm = mask.slice();
+    for (let y = 0; y < H; y++){
+      for (let x = 0; x < W; x++){
+        const idx = y * W + x;
+        if (mask[idx]) continue;
+        if ((x > 0 && mask[idx - 1]) || (x < W - 1 && mask[idx + 1]) ||
+            (y > 0 && mask[idx - W]) || (y < H - 1 && mask[idx + W])){
+          const i = idx * 4;
+          const soft = d[i + 3] < 250;
+          const near = Math.abs(d[i] - sr) + Math.abs(d[i + 1] - sg) + Math.abs(d[i + 2] - sb) <= 200;
+          if (soft || near) nm[idx] = 1;
+        }
+      }
+    }
+    mask = nm;
+  }
+  minX = Math.max(0, minX - 2); minY = Math.max(0, minY - 2);
+  maxX = Math.min(W - 1, maxX + 2); maxY = Math.min(H - 1, maxY + 2);
+  const bw = maxX - minX + 1, bh = maxY - minY + 1;
+  beginPaintOp();
+  // copy masked pixels into the floating buffer, clear them from the layer
+  const bimg = new ImageData(bw, bh);
+  const bd = bimg.data;
+  for (let y = minY; y <= maxY; y++){
+    for (let x = minX; x <= maxX; x++){
+      const idx = y * W + x;
+      if (!mask[idx]) continue;
+      const si = idx * 4, di = ((y - minY) * bw + (x - minX)) * 4;
+      bd[di] = d[si]; bd[di + 1] = d[si + 1]; bd[di + 2] = d[si + 2]; bd[di + 3] = d[si + 3];
+      d[si + 3] = 0;
+    }
+  }
+  const buf = document.createElement('canvas');
+  buf.width = bw; buf.height = bh;
+  buf.getContext('2d').putImageData(bimg, 0, 0);
+  ctx.putImageData(img, 0, 0);
+  invalidate(l);
+  sel = { x: minX, y: minY, w: bw, h: bh, buf, alpha: 1 };
+  render();
+  drawSelRect();
+  return true;
+}
+
 /* ============== pointer input ============== */
 let drawing = false, activePointer = null, last = null, startPt = null, lastCell = null;
 let selDrag = null; // 'marquee' | 'move'
+let moveBuf = null, moveStart = null; // move-layer tool state
 
 ovC.addEventListener('pointerdown', e => {
   if (drawing) return;
@@ -1309,6 +1395,35 @@ ovC.addEventListener('pointerdown', e => {
       startPt = p;
       sel = { x: p.x, y: p.y, w: 0, h: 0, buf: null, alpha: 1 };
     }
+    return;
+  }
+
+  if (state.tool === 'wand'){
+    if (sel && p.x >= sel.x && p.x <= sel.x + sel.w && p.y >= sel.y && p.y <= sel.y + sel.h){
+      drawing = true;
+      selDrag = 'move';
+      last = p;
+      return;
+    }
+    commitSelection();
+    if (wandSelect(p)){ // grabbed: drag immediately in the same gesture
+      drawing = true;
+      selDrag = 'move';
+      last = p;
+      $('#selAlpha').value = 100;
+      $('#selBar').classList.add('show');
+    }
+    return;
+  }
+
+  if (state.tool === 'move'){
+    commitSelection();
+    beginPaintOp();
+    drawing = true;
+    moveStart = p;
+    moveBuf = document.createElement('canvas');
+    moveBuf.width = W; moveBuf.height = H;
+    moveBuf.getContext('2d').drawImage(curLayer().cv, 0, 0);
     return;
   }
 
@@ -1358,19 +1473,29 @@ ovC.addEventListener('pointermove', e => {
   const coalesced = e.getCoalescedEvents ? e.getCoalescedEvents() : [];
   const events = coalesced.length ? coalesced : [e];
 
-  if (state.tool === 'select'){
+  if (state.tool === 'select' || state.tool === 'wand'){
     const p = getPos(e);
     if (selDrag === 'marquee'){
       sel.x = Math.min(startPt.x, p.x);
       sel.y = Math.min(startPt.y, p.y);
       sel.w = Math.abs(p.x - startPt.x);
       sel.h = Math.abs(p.y - startPt.y);
-    } else if (selDrag === 'move'){
+    } else if (selDrag === 'move' && sel){
       sel.x += p.x - last.x;
       sel.y += p.y - last.y;
       last = p;
     }
     drawSelRect();
+    return;
+  }
+
+  if (state.tool === 'move'){
+    const p = getPos(e);
+    const ctx = curLayer().cv.getContext('2d');
+    ctx.clearRect(0, 0, W, H);
+    ctx.drawImage(moveBuf, p.x - moveStart.x, p.y - moveStart.y);
+    invalidate(curLayer());
+    render();
     return;
   }
 
@@ -1418,7 +1543,7 @@ function endStroke(e){
   drawing = false;
   activePointer = null;
 
-  if (state.tool === 'select'){
+  if (state.tool === 'select' || state.tool === 'wand'){
     if (selDrag === 'marquee'){
       if (sel && (sel.w < 6 || sel.h < 6)){
         sel = null;
@@ -1433,6 +1558,14 @@ function endStroke(e){
       }
     }
     selDrag = null;
+    return;
+  }
+
+  if (state.tool === 'move'){
+    moveBuf = null;
+    renderTimeline();
+    renderLayers();
+    scheduleAutosave();
     return;
   }
 
