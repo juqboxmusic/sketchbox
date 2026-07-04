@@ -104,6 +104,33 @@ canvas{-webkit-touch-callout:none}
   padding:8px 16px;border-radius:999px;
 }
 
+/* text tool bar */
+#textBar{
+  position:absolute;bottom:14px;left:50%;transform:translateX(-50%);
+  display:none;align-items:center;gap:9px;flex-wrap:wrap;justify-content:center;
+  background:var(--card);border-radius:22px;box-shadow:var(--shadow-big);
+  padding:10px 14px;z-index:6;max-width:calc(100% - 24px);
+}
+#textBar.show{display:flex}
+#textBar input[type=text]{
+  user-select:text;-webkit-user-select:text;
+  font:inherit;font-weight:700;font-size:16px;
+  border:3px solid #E8E1D4;border-radius:14px;
+  padding:9px 12px;width:170px;outline:none;color:var(--ink);background:#FDFBF7;
+}
+#textBar input[type=text]:focus{border-color:var(--accent)}
+#textBar select{
+  font:inherit;font-weight:800;font-size:14px;color:var(--ink);
+  border:3px solid #E8E1D4;border-radius:12px;padding:8px;background:#FDFBF7;
+}
+#textBar .tsz{
+  width:38px;height:38px;border-radius:12px;background:#F1ECE3;
+  font-weight:800;border:3px solid transparent;color:var(--ink);
+}
+#textBar .tsz.on{border-color:var(--accent);background:var(--accent-soft)}
+#textBar .done{background:var(--green);color:#fff;font-weight:800;font-size:15px;padding:9px 16px;border-radius:999px}
+#textBar .cancel{background:#F1ECE3;color:var(--ink-soft);font-weight:800;font-size:15px;width:38px;height:38px;border-radius:50%}
+
 /* ---------- Dock ---------- */
 footer{
   display:flex;flex-direction:column;gap:8px;
@@ -200,6 +227,7 @@ body.pixel .no-pixel{display:none}
 #toolsPop{
   position:absolute;bottom:calc(100% + 6px);left:50%;transform:translateX(-50%);
   width:min(400px, calc(100vw - 28px));
+  max-height:min(68dvh, 620px);overflow-y:auto;
   background:var(--card);border-radius:22px;box-shadow:var(--shadow-big);
   padding:16px;display:none;flex-direction:column;gap:14px;z-index:20;
 }
@@ -366,6 +394,15 @@ body.pixel .no-pixel{display:none}
     <label>Opacity <input type="range" id="selAlpha" min="5" max="100" value="100"></label>
     <button class="done" id="selDone">✓ Done</button>
   </div>
+  <div id="textBar">
+    <input type="text" id="textInput" placeholder="Type here…" maxlength="60" autocomplete="off" autocapitalize="on">
+    <select id="textFont" aria-label="Font"></select>
+    <button class="tsz" data-tsz="0" style="font-size:12px">A</button>
+    <button class="tsz on" data-tsz="1" style="font-size:16px">A</button>
+    <button class="tsz" data-tsz="2" style="font-size:22px">A</button>
+    <button class="done" id="textDone">✓ Done</button>
+    <button class="cancel" id="textCancel" aria-label="Cancel text">✕</button>
+  </div>
 </main>
 
 <footer>
@@ -401,6 +438,15 @@ body.pixel .no-pixel{display:none}
         <button class="tbtn" data-tool="wand" aria-label="Grab an object by its colour">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M4 20l9-9"/><path d="M15 4v4M13 6h4"/><path d="M19 11v3M17.5 12.5h3"/><path d="M10 3v3M8.5 4.5h3"/></svg>
           Grab
+        </button>
+      </div>
+    </div>
+    <div class="pop-section">
+      <div class="pop-title">Text</div>
+      <div class="pop-tools">
+        <button class="tbtn" data-tool="text" aria-label="Add words">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 7V4h14v3"/><path d="M12 4v16"/><path d="M9 20h6"/></svg>
+          Text
         </button>
       </div>
     </div>
@@ -563,6 +609,7 @@ const state = {
 };
 
 let frames = [];            // [{layers:[{cv, opacity, visible, cache}]}]
+let textSession = null;     // text tool: {x, y, str, font, size}
 
 const viewC = $('#view'), gridCv = $('#gridC'), ovC = $('#overlay');
 const vctx = viewC.getContext('2d', { willReadFrequently: true });
@@ -714,7 +761,7 @@ $('#tabPixel').addEventListener('click', () => setTab('pixel'));
 $('#tabAnim').addEventListener('click', () => setTab('animate'));
 
 /* ============== tools / sizes / colors UI ============== */
-const ADVANCED = [...SHAPES, 'select', 'move', 'wand'];
+const ADVANCED = [...SHAPES, 'select', 'move', 'wand', 'text'];
 function setTool(tool){
   if (tool !== state.tool) commitSelection();
   if (state.tool !== 'eyedrop') state.prevTool = state.tool;
@@ -767,6 +814,7 @@ function setColor(hex, isCustom){
   if (match && !isCustom) match.classList.add('on');
   else { customBtn.classList.add('on'); customBtn.style.background = hex; }
   $$('.sbtn i').forEach(i => i.style.background = hex);
+  if (textSession) renderTextPreview();
 }
 setColor(state.color);
 
@@ -1301,6 +1349,7 @@ function liftSelection(){
 }
 function commitSelection(){
   guideV = guideH = false;
+  if (textSession) closeTextSession(true); // pending words are kept, not lost
   if (!sel) return;
   if (sel.buf){
     const ctx = curLayer().cv.getContext('2d');
@@ -1401,6 +1450,94 @@ function wandSelect(p){
   return true;
 }
 
+/* ============== text tool ============== */
+const FONTS = [
+  { label: 'Fun',    family: '"Comic Sans MS","Chalkboard SE","Comic Neue",cursive' },
+  { label: 'Clean',  family: 'Arial, Helvetica, sans-serif' },
+  { label: 'Fancy',  family: 'Georgia,"Times New Roman",serif' },
+  { label: 'Marker', family: '"Marker Felt","Segoe Print","Comic Sans MS",cursive' },
+  { label: 'Script', family: '"Snell Roundhand","Brush Script MT","Segoe Script",cursive' },
+  { label: 'Type',   family: '"Courier New",Courier,monospace' }
+];
+const TEXT_SIZES = [40, 80, 140];
+FONTS.forEach((f, i) => {
+  const o = document.createElement('option');
+  o.value = i;
+  o.textContent = f.label;
+  o.style.fontFamily = f.family;
+  $('#textFont').appendChild(o);
+});
+function textFontCss(){
+  return '700 ' + TEXT_SIZES[textSession.size] + 'px ' + FONTS[textSession.font].family;
+}
+function renderTextPreview(){
+  if (!textSession) return;
+  octx.clearRect(0, 0, W, H);
+  octx.font = textFontCss();
+  octx.textAlign = 'center';
+  octx.textBaseline = 'middle';
+  octx.fillStyle = state.color;
+  octx.globalAlpha = textSession.str ? 1 : 0.35;
+  octx.fillText(textSession.str || 'Abc', textSession.x, textSession.y);
+  octx.globalAlpha = 1;
+  drawGuides(octx);
+}
+function openTextSession(p){
+  commitSelection();
+  textSession = { x: p.x, y: p.y, str: '', font: +$('#textFont').value || 0, size: 1 };
+  $('#textInput').value = '';
+  $$('#textBar .tsz').forEach(b => b.classList.toggle('on', +b.dataset.tsz === 1));
+  $('#textBar').classList.add('show');
+  renderTextPreview();
+  setTimeout(() => $('#textInput').focus(), 50);
+}
+function closeTextSession(commit){
+  const ts = textSession;
+  textSession = null; // clear first — beginPaintOp → commitSelection must not recurse
+  guideV = guideH = false;
+  $('#textBar').classList.remove('show');
+  octx.clearRect(0, 0, W, H);
+  if (commit && ts && ts.str.trim()){
+    beginPaintOp();
+    const ctx = curLayer().cv.getContext('2d');
+    ctx.font = '700 ' + TEXT_SIZES[ts.size] + 'px ' + FONTS[ts.font].family;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = state.color;
+    ctx.fillText(ts.str, ts.x, ts.y);
+    invalidate(curLayer());
+    render();
+    renderTimeline();
+    scheduleAutosave();
+  } else {
+    render();
+  }
+}
+$('#textDone').addEventListener('click', () => closeTextSession(true));
+$('#textCancel').addEventListener('click', () => closeTextSession(false));
+$('#textInput').addEventListener('input', e => {
+  if (!textSession) return;
+  textSession.str = e.target.value;
+  renderTextPreview();
+});
+$('#textInput').addEventListener('keydown', e => {
+  e.stopPropagation();
+  if (e.key === 'Enter') closeTextSession(true);
+  if (e.key === 'Escape') closeTextSession(false);
+});
+$('#textFont').addEventListener('change', e => {
+  if (!textSession) return;
+  textSession.font = +e.target.value;
+  renderTextPreview();
+});
+$$('#textBar .tsz').forEach(b => b.addEventListener('click', () => {
+  if (!textSession) return;
+  textSession.size = +b.dataset.tsz;
+  $$('#textBar .tsz').forEach(x => x.classList.toggle('on', x === b));
+  renderTextPreview();
+}));
+$('#textBar').addEventListener('pointerdown', e => e.stopPropagation());
+
 /* ============== pointer input ============== */
 let drawing = false, activePointer = null, last = null, startPt = null, lastCell = null;
 let selDrag = null; // 'marquee' | 'move'
@@ -1416,6 +1553,19 @@ ovC.addEventListener('pointerdown', e => {
   const p = getPos(e);
 
   if (state.tool === 'eyedrop'){ pickColorAt(p); return; }
+
+  if (state.tool === 'text'){
+    if (!textSession){
+      openTextSession(p);
+    } else {
+      // tap moves the words there; keep dragging to fine-tune
+      textSession.x = p.x;
+      textSession.y = p.y;
+      drawing = true;
+      renderTextPreview();
+    }
+    return;
+  }
 
   if (state.tool === 'select'){
     drawing = true;
@@ -1511,6 +1661,20 @@ ovC.addEventListener('pointermove', e => {
   const coalesced = e.getCoalescedEvents ? e.getCoalescedEvents() : [];
   const events = coalesced.length ? coalesced : [e];
 
+  if (state.tool === 'text'){
+    const p = getPos(e);
+    if (textSession){
+      textSession.x = p.x;
+      textSession.y = p.y;
+      guideV = Math.abs(textSession.x - W / 2) <= SNAP;
+      guideH = Math.abs(textSession.y - H / 2) <= SNAP;
+      if (guideV) textSession.x = W / 2;
+      if (guideH) textSession.y = H / 2;
+      renderTextPreview();
+    }
+    return;
+  }
+
   if (state.tool === 'select' || state.tool === 'wand'){
     const p = getPos(e);
     if (selDrag === 'marquee'){
@@ -1592,6 +1756,12 @@ function endStroke(e){
   if (!drawing || e.pointerId !== activePointer) return;
   drawing = false;
   activePointer = null;
+
+  if (state.tool === 'text'){
+    guideV = guideH = false;
+    renderTextPreview();
+    return;
+  }
 
   if (state.tool === 'select' || state.tool === 'wand'){
     guideV = guideH = false;
