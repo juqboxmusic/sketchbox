@@ -406,6 +406,13 @@ body.pixel .no-pixel{display:none}
       </div>
     </div>
     <div class="pop-section">
+      <div class="pop-title">Background</div>
+      <div class="alpha-chips" id="bgChips">
+        <button class="chip on" data-bg="white">⬜ White</button>
+        <button class="chip" data-bg="transparent">🏁 Clear</button>
+      </div>
+    </div>
+    <div class="pop-section">
       <div class="pop-title">Layers</div>
       <div id="layerList" style="display:flex;flex-direction:column;gap:8px"></div>
       <button id="addLayerBtn">＋ Add layer</button>
@@ -543,6 +550,7 @@ const state = {
   playing: false,
   frame: 0,
   layer: 0,
+  bg: 'white',            // 'white' | 'transparent'
   docId: null
 };
 
@@ -627,9 +635,21 @@ function drawFrameInto(ctx, fr, mult){
   }
   ctx.globalAlpha = 1;
 }
+let checkerPattern = null;
+function getChecker(){
+  if (!checkerPattern){
+    const t = document.createElement('canvas');
+    t.width = t.height = 48;
+    const c = t.getContext('2d');
+    c.fillStyle = '#F2F2F2'; c.fillRect(0, 0, 48, 48);
+    c.fillStyle = '#D9D9D9'; c.fillRect(0, 0, 24, 24); c.fillRect(24, 24, 24, 24);
+    checkerPattern = vctx.createPattern(t, 'repeat');
+  }
+  return checkerPattern;
+}
 function render(){
   vctx.clearRect(0, 0, W, H);
-  vctx.fillStyle = '#FFFFFF';
+  vctx.fillStyle = state.bg === 'transparent' ? getChecker() : '#FFFFFF';
   vctx.fillRect(0, 0, W, H);
   if (state.tab === 'animate' && state.onion && !state.playing && state.frame > 0){
     drawFrameInto(vctx, frames[state.frame - 1], 0.3);
@@ -706,6 +726,15 @@ $$('#alphaChips .chip').forEach(b => b.addEventListener('click', () => {
   state.alpha = +b.dataset.alpha;
   $$('#alphaChips .chip').forEach(x => x.classList.toggle('on', x === b));
 }));
+
+function setBg(v){
+  state.bg = v === 'transparent' ? 'transparent' : 'white';
+  $$('#bgChips .chip').forEach(x => x.classList.toggle('on', x.dataset.bg === state.bg));
+  render();
+  renderTimeline();
+  scheduleAutosave();
+}
+$$('#bgChips .chip').forEach(b => b.addEventListener('click', () => setBg(b.dataset.bg)));
 
 const colorRow = $('#colorRow');
 PALETTE.forEach(hex => {
@@ -919,7 +948,7 @@ function renderLayers(){
     });
     row.appendChild(vis);
     const op = document.createElement('input');
-    op.type = 'range'; op.min = 10; op.max = 100; op.value = Math.round(l.opacity * 100);
+    op.type = 'range'; op.min = 0; op.max = 100; op.value = Math.round(l.opacity * 100);
     op.setAttribute('aria-label', 'Layer ' + (i + 1) + ' opacity');
     let opStart = null;
     op.addEventListener('pointerdown', () => { opStart = { opacity: l.opacity, visible: l.visible }; });
@@ -1144,14 +1173,21 @@ function commitStroke(){
   render();
 }
 /* flood fill: region found on the visible composite, painted into active layer */
+/* fill & eyedropper reference image: current frame on plain white — no
+   checkerboard, no onion skin, so region detection matches what's drawn */
+function compositeOnWhite(){
+  const c = document.createElement('canvas');
+  c.width = W; c.height = H;
+  const x = c.getContext('2d', { willReadFrequently: true });
+  x.fillStyle = '#FFFFFF';
+  x.fillRect(0, 0, W, H);
+  drawFrameInto(x, curFrame());
+  return x;
+}
 function floodFill(p){
   const sx = Math.floor(p.x), sy = Math.floor(p.y);
   if (sx < 0 || sy < 0 || sx >= W || sy >= H) return;
-  const onion = state.onion;
-  state.onion = false;
-  render(); // composite without the onion-skin ghost
-  state.onion = onion;
-  const img = vctx.getImageData(0, 0, W, H);
+  const img = compositeOnWhite().getImageData(0, 0, W, H);
   const d = img.data;
   const i0 = (sy * W + sx) * 4;
   const tr = d[i0], tg = d[i0 + 1], tb = d[i0 + 2];
@@ -1187,12 +1223,7 @@ function floodFill(p){
   render();
 }
 function pickColorAt(p){
-  const onion = state.onion;
-  state.onion = false;
-  render();
-  state.onion = onion;
-  const px = vctx.getImageData(Math.floor(p.x), Math.floor(p.y), 1, 1).data;
-  render();
+  const px = compositeOnWhite().getImageData(Math.floor(p.x), Math.floor(p.y), 1, 1).data;
   const hex = rgbHex(px[0], px[1], px[2]);
   setColor(hex, !PALETTE.includes(hex));
   $('#customColor').value = hex;
@@ -1435,6 +1466,7 @@ function serialize(){
     grid: state.grid,
     fps: state.fps,
     tab: state.tab,
+    bg: state.bg,
     docId: state.docId,
     frames: frames.map(f => ({
       layers: f.layers.map(l => ({ img: layerURL(l), opacity: l.opacity, visible: l.visible }))
@@ -1489,6 +1521,7 @@ async function loadDoc(doc){
   state.layer = 0;
   state.docId = (doc && doc.docId) || null;
   undoStack.length = redoStack.length = 0;
+  setBg(doc && doc.bg === 'transparent' ? 'transparent' : 'white');
   markGridChip();
   setTab(doc && doc.v === 2 && ['draw','pixel','animate'].includes(doc.tab) ? doc.tab : 'draw');
   refreshAll();
@@ -1715,8 +1748,11 @@ function exportImage(type){
   const out = document.createElement('canvas');
   out.width = W; out.height = H;
   const ctx = out.getContext('2d');
-  ctx.fillStyle = '#FFFFFF';
-  ctx.fillRect(0, 0, W, H);
+  // PNG keeps real transparency when the background is Clear; JPEG can't hold alpha
+  if (!(state.bg === 'transparent' && type === 'image/png')){
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillRect(0, 0, W, H);
+  }
   drawFrameInto(ctx, curFrame());
   const ext = type === 'image/jpeg' ? 'jpg' : 'png';
   const a = document.createElement('a');
@@ -1769,17 +1805,19 @@ function lzwEncode(indices, minCodeSize){
   if (curShift > 0) out.push(cur & 255);
   return new Uint8Array(out);
 }
-function encodeGif(frameDatas, w, h, fps){
-  // global palette: the 256 most common colours across all frames (5 bits/channel buckets)
+function encodeGif(frameDatas, w, h, fps, transparent){
+  // global palette: the most common colours across all frames (5 bits/channel buckets)
   const hist = new Map();
   for (const fd of frameDatas){
     const d = fd.data;
     for (let i = 0; i < d.length; i += 8){
+      if (transparent && d[i + 3] < 128) continue;
       const key = (d[i] >> 3 << 10) | (d[i + 1] >> 3 << 5) | (d[i + 2] >> 3);
       hist.set(key, (hist.get(key) || 0) + 1);
     }
   }
-  const top = [...hist.entries()].sort((a, b) => b[1] - a[1]).slice(0, 256).map(e => e[0]);
+  // with transparency on, reserve one palette slot for the transparent index
+  const top = [...hist.entries()].sort((a, b) => b[1] - a[1]).slice(0, transparent ? 255 : 256).map(e => e[0]);
   const pal = new Uint8Array(768);
   top.forEach((key, i) => {
     pal[i * 3]     = (key >> 10 & 31) << 3 | 4;
@@ -1787,6 +1825,7 @@ function encodeGif(frameDatas, w, h, fps){
     pal[i * 3 + 2] = (key & 31) << 3 | 4;
   });
   const n = Math.max(1, top.length);
+  const transIdx = transparent ? n : 0; // first unused slot
   const cache = new Map();
   function nearest(r, g, b){
     const key = (r >> 3 << 10) | (g >> 3 << 5) | (b >> 3);
@@ -1810,12 +1849,16 @@ function encodeGif(frameDatas, w, h, fps){
   // loop forever (NETSCAPE2.0 extension)
   bytes.push(0x21, 0xFF, 0x0B, 78, 69, 84, 83, 67, 65, 80, 69, 50, 46, 48, 3, 1, 0, 0, 0);
   const delay = Math.max(2, Math.round(100 / fps)); // centiseconds
+  // packed GCE byte: transparent → disposal "restore to background" + transparency flag
+  const gcePacked = transparent ? 0b00001001 : 0b00000100;
   for (const fd of frameDatas){
-    bytes.push(0x21, 0xF9, 4, 4, delay & 255, (delay >> 8) & 255, 0, 0);
+    bytes.push(0x21, 0xF9, 4, gcePacked, delay & 255, (delay >> 8) & 255, transIdx, 0);
     bytes.push(0x2C); push16(0); push16(0); push16(w); push16(h); bytes.push(0);
     const d = fd.data;
     const idx = new Uint8Array(w * h);
-    for (let p = 0, q = 0; p < d.length; p += 4, q++) idx[q] = nearest(d[p], d[p + 1], d[p + 2]);
+    for (let p = 0, q = 0; p < d.length; p += 4, q++){
+      idx[q] = (transparent && d[p + 3] < 128) ? transIdx : nearest(d[p], d[p + 1], d[p + 2]);
+    }
     bytes.push(8); // LZW minimum code size
     const lzw = lzwEncode(idx, 8);
     for (let off = 0; off < lzw.length; off += 255){
@@ -1830,16 +1873,19 @@ function encodeGif(frameDatas, w, h, fps){
 }
 const GIF_W = 640, GIF_H = 480;
 function buildGifBlob(){
+  const transparent = state.bg === 'transparent';
   const datas = frames.map(fr => {
     const c = document.createElement('canvas');
     c.width = GIF_W; c.height = GIF_H;
     const x = c.getContext('2d');
-    x.fillStyle = '#FFFFFF';
-    x.fillRect(0, 0, GIF_W, GIF_H);
+    if (!transparent){
+      x.fillStyle = '#FFFFFF';
+      x.fillRect(0, 0, GIF_W, GIF_H);
+    }
     x.save(); x.scale(GIF_W / W, GIF_H / H); drawFrameInto(x, fr); x.restore();
     return x.getImageData(0, 0, GIF_W, GIF_H);
   });
-  return new Blob([encodeGif(datas, GIF_W, GIF_H, state.fps)], { type: 'image/gif' });
+  return new Blob([encodeGif(datas, GIF_W, GIF_H, state.fps, transparent)], { type: 'image/gif' });
 }
 $('#exportGif').addEventListener('click', () => {
   toast('Making your GIF… 🎬');
