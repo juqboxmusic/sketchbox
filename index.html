@@ -1241,6 +1241,37 @@ function pickColorAt(p){
 
 /* ============== selection tool ============== */
 let sel = null; // {x,y,w,h, buf:null|canvas, alpha, mode:'idle'}
+
+/* centre snapping: thin guide lines when dragged content hits canvas centre */
+const SNAP = 14;
+let guideV = false, guideH = false;
+function drawGuides(ctx){
+  if (!guideV && !guideH) return;
+  ctx.save();
+  ctx.strokeStyle = '#FF3FA4';
+  ctx.lineWidth = 2.5;
+  ctx.setLineDash([]);
+  ctx.beginPath();
+  if (guideV){ ctx.moveTo(W / 2, 0); ctx.lineTo(W / 2, H); }
+  if (guideH){ ctx.moveTo(0, H / 2); ctx.lineTo(W, H / 2); }
+  ctx.stroke();
+  ctx.restore();
+}
+function layerContentCentre(cv){
+  const d = cv.getContext('2d').getImageData(0, 0, W, H).data;
+  let minX = W, minY = H, maxX = -1, maxY = -1;
+  for (let y = 0; y < H; y++){
+    for (let x = 0; x < W; x++){
+      if (d[(y * W + x) * 4 + 3] > 10){
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+  return maxX < 0 ? null : { cx: (minX + maxX + 1) / 2, cy: (minY + maxY + 1) / 2 };
+}
 function drawSelRect(){
   octx.clearRect(0, 0, W, H);
   if (!sel) return;
@@ -1254,6 +1285,7 @@ function drawSelRect(){
   octx.strokeStyle = '#4D96FF';
   octx.strokeRect(sel.x + 0.5, sel.y + 0.5, sel.w, sel.h);
   octx.setLineDash([]);
+  drawGuides(octx);
 }
 function liftSelection(){
   if (!sel || sel.buf) return;
@@ -1268,6 +1300,7 @@ function liftSelection(){
   render();
 }
 function commitSelection(){
+  guideV = guideH = false;
   if (!sel) return;
   if (sel.buf){
     const ctx = curLayer().cv.getContext('2d');
@@ -1371,7 +1404,8 @@ function wandSelect(p){
 /* ============== pointer input ============== */
 let drawing = false, activePointer = null, last = null, startPt = null, lastCell = null;
 let selDrag = null; // 'marquee' | 'move'
-let moveBuf = null, moveStart = null; // move-layer tool state
+let selStart = null; // selection position at drag start (absolute dragging)
+let moveBuf = null, moveStart = null, moveCentre = null; // move-layer tool state
 
 ovC.addEventListener('pointerdown', e => {
   if (drawing) return;
@@ -1388,7 +1422,8 @@ ovC.addEventListener('pointerdown', e => {
     if (sel && p.x >= sel.x && p.x <= sel.x + sel.w && p.y >= sel.y && p.y <= sel.y + sel.h){
       selDrag = 'move';
       liftSelection();
-      last = p;
+      startPt = p;
+      selStart = { x: sel.x, y: sel.y };
     } else {
       commitSelection();
       selDrag = 'marquee';
@@ -1402,14 +1437,16 @@ ovC.addEventListener('pointerdown', e => {
     if (sel && p.x >= sel.x && p.x <= sel.x + sel.w && p.y >= sel.y && p.y <= sel.y + sel.h){
       drawing = true;
       selDrag = 'move';
-      last = p;
+      startPt = p;
+      selStart = { x: sel.x, y: sel.y };
       return;
     }
     commitSelection();
     if (wandSelect(p)){ // grabbed: drag immediately in the same gesture
       drawing = true;
       selDrag = 'move';
-      last = p;
+      startPt = p;
+      selStart = { x: sel.x, y: sel.y };
       $('#selAlpha').value = 100;
       $('#selBar').classList.add('show');
     }
@@ -1421,6 +1458,7 @@ ovC.addEventListener('pointerdown', e => {
     beginPaintOp();
     drawing = true;
     moveStart = p;
+    moveCentre = layerContentCentre(curLayer().cv);
     moveBuf = document.createElement('canvas');
     moveBuf.width = W; moveBuf.height = H;
     moveBuf.getContext('2d').drawImage(curLayer().cv, 0, 0);
@@ -1481,9 +1519,12 @@ ovC.addEventListener('pointermove', e => {
       sel.w = Math.abs(p.x - startPt.x);
       sel.h = Math.abs(p.y - startPt.y);
     } else if (selDrag === 'move' && sel){
-      sel.x += p.x - last.x;
-      sel.y += p.y - last.y;
-      last = p;
+      sel.x = selStart.x + (p.x - startPt.x);
+      sel.y = selStart.y + (p.y - startPt.y);
+      guideV = Math.abs(sel.x + sel.w / 2 - W / 2) <= SNAP;
+      guideH = Math.abs(sel.y + sel.h / 2 - H / 2) <= SNAP;
+      if (guideV) sel.x = W / 2 - sel.w / 2;
+      if (guideH) sel.y = H / 2 - sel.h / 2;
     }
     drawSelRect();
     return;
@@ -1491,11 +1532,20 @@ ovC.addEventListener('pointermove', e => {
 
   if (state.tool === 'move'){
     const p = getPos(e);
+    let dx = p.x - moveStart.x, dy = p.y - moveStart.y;
+    if (moveCentre){
+      guideV = Math.abs(moveCentre.cx + dx - W / 2) <= SNAP;
+      guideH = Math.abs(moveCentre.cy + dy - H / 2) <= SNAP;
+      if (guideV) dx = W / 2 - moveCentre.cx;
+      if (guideH) dy = H / 2 - moveCentre.cy;
+    }
     const ctx = curLayer().cv.getContext('2d');
     ctx.clearRect(0, 0, W, H);
-    ctx.drawImage(moveBuf, p.x - moveStart.x, p.y - moveStart.y);
+    ctx.drawImage(moveBuf, dx, dy);
     invalidate(curLayer());
     render();
+    octx.clearRect(0, 0, W, H);
+    drawGuides(octx);
     return;
   }
 
@@ -1544,6 +1594,7 @@ function endStroke(e){
   activePointer = null;
 
   if (state.tool === 'select' || state.tool === 'wand'){
+    guideV = guideH = false;
     if (selDrag === 'marquee'){
       if (sel && (sel.w < 6 || sel.h < 6)){
         sel = null;
@@ -1556,13 +1607,18 @@ function endStroke(e){
         $('#selBar').classList.add('show');
         drawSelRect();
       }
+    } else if (sel){
+      drawSelRect(); // redraw without the guide lines
     }
     selDrag = null;
     return;
   }
 
   if (state.tool === 'move'){
+    guideV = guideH = false;
+    octx.clearRect(0, 0, W, H);
     moveBuf = null;
+    moveCentre = null;
     renderTimeline();
     renderLayers();
     scheduleAutosave();
