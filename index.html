@@ -104,6 +104,10 @@ canvas{-webkit-touch-callout:none}
   background:var(--green);color:#fff;font-weight:800;font-size:14px;
   padding:8px 16px;border-radius:999px;
 }
+#selBar .crop{
+  background:var(--accent);color:#fff;font-weight:800;font-size:14px;
+  padding:8px 14px;border-radius:999px;
+}
 
 /* text tool bar */
 #textBar{
@@ -394,6 +398,7 @@ body.pixel .no-pixel{display:none}
   <div id="selBar">
     <label>Size <input type="range" id="selSize" min="25" max="300" value="100"></label>
     <label>Opacity <input type="range" id="selAlpha" min="5" max="100" value="100"></label>
+    <button class="crop" id="selCrop">✂️ Crop</button>
     <button class="done" id="selDone">✓ Done</button>
   </div>
   <div id="textBar">
@@ -471,6 +476,15 @@ body.pixel .no-pixel{display:none}
       <div class="alpha-chips" id="bgChips">
         <button class="chip on" data-bg="white">⬜ White</button>
         <button class="chip" data-bg="transparent">🏁 Clear</button>
+      </div>
+    </div>
+    <div class="pop-section">
+      <div class="pop-title">Canvas shape</div>
+      <div class="alpha-chips" id="canvasChips">
+        <button class="chip" data-cw="1280" data-ch="960">Wide</button>
+        <button class="chip" data-cw="960" data-ch="960">Square</button>
+        <button class="chip" data-cw="960" data-ch="1280">Tall</button>
+        <button class="chip" data-cw="1280" data-ch="720">Film</button>
       </div>
     </div>
     <div class="pop-section">
@@ -583,7 +597,7 @@ const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
 
 /* ============== constants & state ============== */
-const W = 1280, H = 960;
+let W = 1280, H = 960; // canvas size is per-document (see setCanvasDims)
 const SIZES_DRAW = [4, 10, 22, 42];
 const SIZES_PIX  = [1, 2, 3, 4];
 const GRID_SIZES = [8, 12, 16, 24, 32, 48];
@@ -663,6 +677,63 @@ $('#confirmYes').addEventListener('click', () => {
 });
 
 /* ============== project model ============== */
+function setCanvasDims(w, h){
+  W = w; H = h;
+  viewC.width = W; viewC.height = H;
+  gridCv.width = W; gridCv.height = H;
+  ovC.width = W; ovC.height = H;
+  strokeC.width = W; strokeC.height = H;
+  checkerPattern = null;
+  markCanvasChips();
+  drawGrid();
+  fitStage();
+}
+function markCanvasChips(){
+  $$('#canvasChips .chip').forEach(c =>
+    c.classList.toggle('on', +c.dataset.cw === W && +c.dataset.ch === H));
+}
+function projectSnapshot(){
+  return {
+    w: W, h: H,
+    frames: frames.map(f => ({
+      layers: f.layers.map(l => ({ img: layerURL(l), opacity: l.opacity, visible: l.visible }))
+    }))
+  };
+}
+async function applyProjectSnapshot(s){
+  setCanvasDims(s.w, s.h);
+  const nf = [];
+  for (const f of s.frames){
+    const fr = { layers: [] };
+    for (const ld of f.layers){
+      const nl = newLayer();
+      nl.opacity = ld.opacity;
+      nl.visible = ld.visible;
+      fr.layers.push(nl);
+      await drawURLInto(nl, ld.img);
+    }
+    nf.push(fr);
+  }
+  frames = nf;
+  state.frame = Math.min(state.frame, frames.length - 1);
+  state.layer = Math.min(state.layer, curFrame().layers.length - 1);
+}
+function resizeCanvas(newW, newH, ox, oy){
+  commitSelection();
+  stopPlayback();
+  pushUndo({ t: 'canvas', snap: projectSnapshot() });
+  for (const f of frames){
+    for (const l of f.layers){
+      const cv = document.createElement('canvas');
+      cv.width = newW; cv.height = newH;
+      cv.getContext('2d').drawImage(l.cv, ox, oy);
+      l.cv = cv;
+      invalidate(l);
+    }
+  }
+  setCanvasDims(newW, newH);
+  refreshAll();
+}
 function newLayer(){
   const cv = document.createElement('canvas');
   cv.width = W; cv.height = H;
@@ -797,6 +868,13 @@ function setBg(v){
   scheduleAutosave();
 }
 $$('#bgChips .chip').forEach(b => b.addEventListener('click', () => setBg(b.dataset.bg)));
+
+$$('#canvasChips .chip').forEach(b => b.addEventListener('click', () => {
+  const cw = +b.dataset.cw, ch = +b.dataset.ch;
+  if (cw === W && ch === H) return;
+  resizeCanvas(cw, ch, Math.round((cw - W) / 2), Math.round((ch - H) / 2));
+  toast('Canvas changed! 🖼️');
+}));
 
 const colorRow = $('#colorRow');
 PALETTE.forEach(hex => {
@@ -936,6 +1014,11 @@ async function applyOp(op){
     drawGrid();
     return inv;
   }
+  if (op.t === 'canvas'){
+    const inv = { t: 'canvas', snap: projectSnapshot() };
+    await applyProjectSnapshot(op.snap);
+    return inv;
+  }
   return null;
 }
 async function doUndo(){
@@ -993,7 +1076,8 @@ function renderLayers(){
     th.width = 88; th.height = 66;
     const tc = th.getContext('2d');
     tc.fillStyle = '#fff'; tc.fillRect(0, 0, 88, 66);
-    tc.drawImage(l.cv, 0, 0, 88, 66);
+    const ls = Math.min(88 / W, 66 / H);
+    tc.drawImage(l.cv, (88 - W * ls) / 2, (66 - H * ls) / 2, W * ls, H * ls);
     row.appendChild(th);
     const name = document.createElement('span');
     name.className = 'lname';
@@ -1095,7 +1179,12 @@ function renderTimeline(){
     cv.width = 120; cv.height = 90;
     const c = cv.getContext('2d');
     c.fillStyle = '#fff'; c.fillRect(0, 0, 120, 90);
-    c.save(); c.scale(120 / W, 90 / H); drawFrameInto(c, fr); c.restore();
+    const ts = Math.min(120 / W, 90 / H);
+    c.save();
+    c.translate((120 - W * ts) / 2, (90 - H * ts) / 2);
+    c.scale(ts, ts);
+    drawFrameInto(c, fr);
+    c.restore();
     b.appendChild(cv);
     const n = document.createElement('span');
     n.className = 'fnum'; n.textContent = i + 1;
@@ -1374,6 +1463,18 @@ function commitSelection(){
   scheduleAutosave();
 }
 $('#selDone').addEventListener('click', commitSelection);
+$('#selCrop').addEventListener('click', () => {
+  if (!sel) return;
+  let x = Math.round(sel.x), y = Math.round(sel.y);
+  let w = Math.round(sel.w), h = Math.round(sel.h);
+  commitSelection(); // a lifted/moved selection is stamped down first
+  x = Math.max(0, Math.min(W - 64, x));
+  y = Math.max(0, Math.min(H - 64, y));
+  w = Math.max(64, Math.min(W - x, w));
+  h = Math.max(64, Math.min(H - y, h));
+  resizeCanvas(w, h, -x, -y);
+  toast('Cropped! ✂️');
+});
 $('#selAlpha').addEventListener('input', e => {
   if (!sel) return;
   liftSelection();
@@ -2002,6 +2103,8 @@ $('#clearBtn').addEventListener('click', () => {
 function serialize(){
   return {
     v: 2,
+    w: W,
+    h: H,
     grid: state.grid,
     fps: state.fps,
     tab: state.tab,
@@ -2015,6 +2118,10 @@ function serialize(){
 async function loadDoc(doc){
   commitSelection();
   stopPlayback();
+  setCanvasDims(
+    (doc && doc.v === 2 && doc.w > 0) ? doc.w : 1280,
+    (doc && doc.v === 2 && doc.h > 0) ? doc.h : 960
+  );
   const nf = [];
   if (doc && doc.v === 2 && Array.isArray(doc.frames) && doc.frames.length){
     for (const f of doc.frames){
@@ -2091,7 +2198,12 @@ function compositeThumb(fr){
   const tc = t.getContext('2d');
   tc.fillStyle = '#FFFFFF';
   tc.fillRect(0, 0, 200, 150);
-  tc.save(); tc.scale(200 / W, 150 / H); drawFrameInto(tc, fr); tc.restore();
+  const s = Math.min(200 / W, 150 / H);
+  tc.save();
+  tc.translate((200 - W * s) / 2, (150 - H * s) / 2);
+  tc.scale(s, s);
+  drawFrameInto(tc, fr);
+  tc.restore();
   return t.toDataURL('image/jpeg', 0.6);
 }
 $('#saveBtn').addEventListener('click', () => {
@@ -2460,21 +2572,22 @@ function encodeGif(frameDatas, w, h, fps, transparent){
   bytes.push(0x3B);
   return new Uint8Array(bytes);
 }
-const GIF_W = 640, GIF_H = 480;
 function buildGifBlob(){
   const transparent = state.bg === 'transparent';
+  const gs = Math.min(1, 640 / Math.max(W, H));
+  const gw = Math.max(2, Math.round(W * gs)), gh = Math.max(2, Math.round(H * gs));
   const datas = frames.map(fr => {
     const c = document.createElement('canvas');
-    c.width = GIF_W; c.height = GIF_H;
+    c.width = gw; c.height = gh;
     const x = c.getContext('2d');
     if (!transparent){
       x.fillStyle = '#FFFFFF';
-      x.fillRect(0, 0, GIF_W, GIF_H);
+      x.fillRect(0, 0, gw, gh);
     }
-    x.save(); x.scale(GIF_W / W, GIF_H / H); drawFrameInto(x, fr); x.restore();
-    return x.getImageData(0, 0, GIF_W, GIF_H);
+    x.save(); x.scale(gw / W, gh / H); drawFrameInto(x, fr); x.restore();
+    return x.getImageData(0, 0, gw, gh);
   });
-  return new Blob([encodeGif(datas, GIF_W, GIF_H, state.fps, transparent)], { type: 'image/gif' });
+  return new Blob([encodeGif(datas, gw, gh, state.fps, transparent)], { type: 'image/gif' });
 }
 $('#exportGif').addEventListener('click', () => {
   toast('Making your GIF… 🎬');
