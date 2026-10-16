@@ -1,9 +1,12 @@
 {
   "name": "SketchBox",
   "short_name": "SketchBox",
-  "description": "Friendly drawing and pixel art for kids",
-  "start_url": ".",
+  "description": "Friendly drawing, pixel art and animation for kids",
+  "id": "./",
+  "start_url": "./",
+  "scope": "./",
   "display": "standalone",
+  "orientation": "any",
   "background_color": "#FDF9F3",
   "theme_color": "#FDF9F3",
   "icons": [

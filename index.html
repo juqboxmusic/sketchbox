@@ -296,6 +296,19 @@ body.pixel .no-pixel{display:none}
 .confirm-msg{font-size:16.5px;font-weight:600;text-align:center;color:var(--ink);line-height:1.4}
 .confirm-emoji{font-size:44px;text-align:center}
 
+/* install popup */
+.install-sheet{align-items:center;text-align:center}
+.install-sheet > .big-btn, .install-sheet > div{width:100%}
+.install-sheet h2{justify-content:center}
+.install-icon{width:84px;height:84px;border-radius:20px;box-shadow:var(--shadow-big);display:block}
+.install-sub{margin:0;font-size:15.5px;font-weight:600;color:var(--ink-soft);line-height:1.4}
+.install-steps{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:10px;width:100%;text-align:left}
+.install-steps li{display:flex;align-items:center;gap:10px;background:#FAF6EE;border-radius:14px;padding:11px 13px;font-size:15px;font-weight:700;line-height:1.35}
+.install-steps svg{width:24px;height:24px;flex-shrink:0;vertical-align:middle}
+.step-num{width:28px;height:28px;border-radius:50%;background:var(--accent);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800;flex-shrink:0}
+.install-hint{font-size:13.5px;font-weight:700;color:#8A5A00;background:#FFF4D6;border-radius:14px;padding:10px 12px;line-height:1.4;text-align:left}
+.install-hint button{font-weight:800;text-decoration:underline;color:#8A5A00}
+
 #galleryGrid{
   display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:14px;
   overflow-y:auto;padding:2px;
@@ -576,6 +589,27 @@ body.pixel .no-pixel{display:none}
       <button class="big-btn plain" id="restoreBtn">📂 Load backup</button>
     </div>
     <input type="file" id="restoreFile" accept=".json,application/json" hidden>
+    <button class="big-btn plain" id="installEntry" style="display:none">📲 Install as an app</button>
+  </div>
+</div>
+
+<!-- Install modal -->
+<div class="modal" id="installModal">
+  <div class="sheet install-sheet" style="max-width:420px">
+    <img src="icon-192.png" alt="" class="install-icon">
+    <h2>Get SketchBox as an app!</h2>
+    <p class="install-sub">It opens full-screen from your home screen, just like a real app, and works without the internet.</p>
+    <div id="installChrome">
+      <button class="big-btn green" id="installGo" style="width:100%">📲 Install SketchBox</button>
+    </div>
+    <ol class="install-steps" id="installIos">
+      <li><span class="step-num">1</span><span>Tap the Share button
+        <svg viewBox="0 0 24 24" fill="none" stroke="#2F7BF5" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-label="Share"><path d="M12 3v12"/><path d="M8 7l4-4 4 4"/><path d="M7 11H6a1 1 0 00-1 1v8a1 1 0 001 1h12a1 1 0 001-1v-8a1 1 0 00-1-1h-1"/></svg></span></li>
+      <li><span class="step-num">2</span><span>Scroll down and tap <b>Add to Home Screen</b> ➕</span></li>
+      <li><span class="step-num">3</span><span>Tap <b>Add</b>. All done! 🎉</span></li>
+    </ol>
+    <div class="install-hint" id="installBackupHint">The app keeps its own copy of your sketches, so first <button id="installBackupLink">tap here to back them up</button>, then use 📂 Load backup inside the app.</div>
+    <button class="big-btn plain" id="installLater">Not now</button>
   </div>
 </div>
 
@@ -2389,6 +2423,65 @@ $('#restoreFile').addEventListener('change', e => {
   reader.readAsText(file);
 });
 
+/* ============== install as an app ============== */
+const LS_INSTALL_SNOOZE = 'sketchbox:installSnooze';
+let deferredInstall = null;
+let autoOfferDue = false, autoOffered = false;
+function isStandalone(){
+  return window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+}
+function isIOS(){
+  // iPadOS reports itself as a Mac, so touch support tells them apart
+  return /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
+}
+function installSnoozed(){
+  try { return Date.now() - (+localStorage.getItem(LS_INSTALL_SNOOZE) || 0) < 14 * 864e5; }
+  catch { return false; }
+}
+function canOfferInstall(){ return !isStandalone() && (!!deferredInstall || isIOS()); }
+function updateInstallEntry(){ $('#installEntry').style.display = canOfferInstall() ? 'flex' : 'none'; }
+function showInstall(){
+  if (!canOfferInstall()) return;
+  const oneTap = !!deferredInstall;
+  $('#installChrome').style.display = oneTap ? 'block' : 'none';
+  $('#installIos').style.display = oneTap ? 'none' : 'flex';
+  // home-screen apps on iOS get separate storage from Safari
+  $('#installBackupHint').style.display = !oneTap && getGallery().length ? 'block' : 'none';
+  openModal('#installModal');
+}
+function tryAutoOffer(){
+  if (autoOffered || !autoOfferDue || installSnoozed() || !canOfferInstall()) return;
+  if ($$('.modal.show').length || drawing || pinch){ setTimeout(tryAutoOffer, 5000); return; }
+  autoOffered = true;
+  try { localStorage.setItem(LS_INSTALL_SNOOZE, String(Date.now())); } catch {}
+  showInstall();
+}
+window.addEventListener('beforeinstallprompt', e => {
+  e.preventDefault();
+  deferredInstall = e;
+  updateInstallEntry();
+  tryAutoOffer();
+});
+window.addEventListener('appinstalled', () => {
+  deferredInstall = null;
+  closeModals();
+  updateInstallEntry();
+  toast('SketchBox is on your home screen! 🎉');
+});
+$('#installGo').addEventListener('click', async () => {
+  const ev = deferredInstall;
+  if (!ev) return;
+  deferredInstall = null; // the browser only lets each prompt be used once
+  closeModals();
+  ev.prompt();
+  try { await ev.userChoice; } catch {}
+  updateInstallEntry();
+});
+$('#installLater').addEventListener('click', closeModals);
+$('#installEntry').addEventListener('click', () => { closeModals(); showInstall(); });
+$('#installBackupLink').addEventListener('click', () => $('#backupBtn').click());
+
 /* ============== image import ============== */
 $('#importBtn').addEventListener('click', () => {
   hideToolsPop();
@@ -2609,6 +2702,9 @@ $('#exportGif').addEventListener('click', () => {
 /* ============== init ============== */
 (async function init(){
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => {});
+  updateInstallEntry();
+  setTimeout(() => { autoOfferDue = true; tryAutoOffer(); }, 4000);
   frames = [newFrame()];
   let restored = null;
   try { restored = JSON.parse(localStorage.getItem(LS_AUTOSAVE)); } catch {}
