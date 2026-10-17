@@ -1,0 +1,710 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>iPad install video</title>
+<style>
+  body{margin:0;background:#2b2b2b;color:#eee;font-family:system-ui;display:flex;flex-direction:column;align-items:center;gap:8px;padding:10px}
+  canvas{width:min(100%, calc((100vh - 70px) * 16 / 9));background:#fff;border-radius:8px}
+  #status{font-size:13px}
+</style>
+<script src="https://cdn.jsdelivr.net/npm/mp4-muxer@5.2.1/build/mp4-muxer.min.js"></script>
+</head>
+<body>
+<canvas id="cv" width="1920" height="1080"></canvas>
+<div><input type="range" id="scrub" min="0" max="25.95" step="0.05" value="0" style="width:520px"> <span id="status">t=0</span></div>
+<script>
+'use strict';
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+const VW = 1920, VH = 1080, DURATION = 26, FPS = 30;
+const ROUND = '"Arial Rounded MT Bold", "Nunito", system-ui, sans-serif';
+const SYS = '-apple-system, "SF Pro Text", "Helvetica Neue", Helvetica, sans-serif';
+const BLUE = '#007AFF';
+const icon = new Image();
+icon.src = '/icon-512.png';
+
+// iPad in landscape (video coords); screen content is drawn in screen coords
+const DX = 760, DY = 140, BEZ = 22, DW = 1084, DH = 824;
+const SX = DX + BEZ, SY = DY + BEZ, SW = DW - 2 * BEZ, SH = DH - 2 * BEZ; // 1040 x 780
+
+/* ---------- helpers ---------- */
+const clamp = (v, a = 0, b = 1) => Math.max(a, Math.min(b, v));
+const prog = (t, a, b) => clamp((t - a) / (b - a));
+const lerp = (a, b, k) => a + (b - a) * k;
+const easeOut = x => 1 - Math.pow(1 - x, 3);
+const easeInOut = x => x < .5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2;
+const easeBack = x => { const c1 = 1.70158, c3 = c1 + 1; return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2); };
+function rr(x, y, w, h, r){ ctx.beginPath(); ctx.roundRect(x, y, w, h, r); }
+function stroke(col, lw){ ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; }
+function fitFont(text, weight, size, family, maxW){
+  let s = size;
+  ctx.font = `${weight} ${s}px ${family}`;
+  while (ctx.measureText(text).width > maxW && s > 10){ s--; ctx.font = `${weight} ${s}px ${family}`; }
+}
+function wrap(text, x, y, maxW, lh){
+  let line = '';
+  for (const w of text.split(' ')){
+    const test = line ? line + ' ' + w : w;
+    if (ctx.measureText(test).width > maxW && line){ ctx.fillText(line, x, y); line = w; y += lh; }
+    else line = test;
+  }
+  if (line) ctx.fillText(line, x, y);
+}
+function drawIcon(x, y, s, r){
+  ctx.save(); rr(x, y, s, s, r); ctx.clip(); ctx.drawImage(icon, x, y, s, s); ctx.restore();
+}
+function check(cx, cy, s, col){
+  stroke(col, s * 0.2);
+  ctx.beginPath(); ctx.moveTo(cx - s * 0.42, cy + s * 0.04); ctx.lineTo(cx - s * 0.1, cy + s * 0.36); ctx.lineTo(cx + s * 0.46, cy - s * 0.32); ctx.stroke();
+}
+function sparkle(x, y, r, col, a){
+  const base = ctx.globalAlpha;
+  ctx.globalAlpha = base * a;
+  ctx.fillStyle = col;
+  ctx.beginPath();
+  for (let k = 0; k < 8; k++){
+    const ang = -Math.PI / 2 + k * Math.PI / 4, rad = k % 2 ? r * 0.35 : r;
+    ctx[k ? 'lineTo' : 'moveTo'](x + Math.cos(ang) * rad, y + Math.sin(ang) * rad);
+  }
+  ctx.closePath(); ctx.fill();
+  ctx.globalAlpha = base;
+}
+
+/* ---------- background ---------- */
+function drawBackground(){
+  ctx.fillStyle = '#FDF9F3';
+  ctx.fillRect(0, 0, VW, VH);
+  const blobs = [[90, 120, 230, '#FF6B6B'], [1820, 90, 260, '#FFD93D'], [60, 1010, 250, '#4D96FF'], [1860, 1020, 230, '#6BCB77'], [700, 1080, 160, '#B983FF']];
+  for (const [x, y, r, c] of blobs){
+    ctx.globalAlpha = 0.13;
+    ctx.fillStyle = c;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+/* ---------- intro & outro cards ---------- */
+function drawIntro(t, a){
+  ctx.save();
+  ctx.globalAlpha = a;
+  const pop = easeBack(prog(t, 0, 0.6));
+  ctx.save();
+  ctx.translate(VW / 2, 330);
+  ctx.scale(pop, pop);
+  ctx.shadowColor = 'rgba(51,64,79,0.25)'; ctx.shadowBlur = 50; ctx.shadowOffsetY = 18;
+  ctx.fillStyle = '#fff'; rr(-115, -115, 230, 230, 54); ctx.fill();
+  ctx.shadowColor = 'transparent';
+  drawIcon(-115, -115, 230, 54);
+  ctx.restore();
+  const ta = easeOut(prog(t, 0.2, 0.8)), sa = easeOut(prog(t, 0.45, 1.05));
+  ctx.textAlign = 'center';
+  ctx.globalAlpha = a * ta;
+  ctx.fillStyle = '#33404F'; ctx.font = `bold 92px ${ROUND}`;
+  ctx.fillText('How to install SketchBox', VW / 2, 600 + (1 - ta) * 30);
+  ctx.fillStyle = '#2F7BF5';
+  ctx.fillText('on your iPad', VW / 2, 712 + (1 - ta) * 30);
+  ctx.globalAlpha = a * sa;
+  ctx.fillStyle = '#7A8699'; ctx.font = `bold 40px ${ROUND}`;
+  ctx.fillText('Free drawing, pixel art & animation for kids', VW / 2, 820 + (1 - sa) * 20);
+  ctx.restore();
+  ctx.textAlign = 'left';
+}
+function drawOutro(t, a){
+  ctx.save();
+  ctx.globalAlpha = a;
+  ctx.textAlign = 'center';
+  const pop = easeBack(prog(t, 21.9, 22.5));
+  ctx.save();
+  ctx.translate(VW / 2, 310);
+  ctx.scale(pop, pop);
+  ctx.shadowColor = 'rgba(51,64,79,0.25)'; ctx.shadowBlur = 50; ctx.shadowOffsetY = 18;
+  ctx.fillStyle = '#fff'; rr(-105, -105, 210, 210, 48); ctx.fill();
+  ctx.shadowColor = 'transparent';
+  drawIcon(-105, -105, 210, 48);
+  ctx.restore();
+  ctx.fillStyle = '#33404F'; ctx.font = `bold 100px ${ROUND}`;
+  ctx.fillText('SketchBox', VW / 2, 590);
+  const url = 'juqboxmusic.github.io/sketchbox';
+  ctx.font = `bold 44px ${ROUND}`;
+  const uw = ctx.measureText(url).width;
+  ctx.fillStyle = '#E3EEFF'; rr(VW / 2 - uw / 2 - 40, 640, uw + 80, 84, 42); ctx.fill();
+  ctx.fillStyle = '#2660C4'; ctx.fillText(url, VW / 2, 698);
+  ctx.fillStyle = '#7A8699'; ctx.font = `bold 38px ${ROUND}`;
+  ctx.fillText('Free  ·  Works offline  ·  No ads', VW / 2, 820);
+  ctx.restore();
+  ctx.textAlign = 'left';
+}
+
+/* ---------- left panel: step checklist ---------- */
+const STEPS = [
+  { title: 'Tap the Share button', sub: 'At the top right of Safari', from: 3.0, to: 6.4 },
+  { title: 'Tap Add to Home Screen', sub: 'Scroll down if you can’t see it', from: 6.4, to: 11.0 },
+  { title: 'Tap Add', sub: 'At the top right of the box', from: 11.0, to: 14.3 }
+];
+function drawStepCard(i, t){
+  const s = STEPS[i];
+  const st = t >= s.to ? 'done' : (t >= s.from ? 'active' : 'upcoming');
+  const k = st === 'active' ? easeOut(prog(t, s.from, s.from + 0.3)) : 0;
+  const x = 80, y = 270 + i * 150, w = 620, h = 128;
+  ctx.save();
+  const sc = 1 + 0.03 * k;
+  ctx.translate(x + w / 2, y + h / 2); ctx.scale(sc, sc); ctx.translate(-(x + w / 2), -(y + h / 2));
+  ctx.shadowColor = st === 'active' ? 'rgba(51,64,79,0.18)' : 'rgba(51,64,79,0.07)';
+  ctx.shadowBlur = st === 'active' ? 30 : 14; ctx.shadowOffsetY = 6;
+  ctx.fillStyle = st === 'done' ? '#EAF7EC' : '#fff';
+  rr(x, y, w, h, 30); ctx.fill();
+  ctx.shadowColor = 'transparent';
+  if (st === 'active'){ stroke(`rgba(77,150,255,${k})`, 5); rr(x + 2.5, y + 2.5, w - 5, h - 5, 28); ctx.stroke(); }
+  const bx = x + 72, by = y + h / 2;
+  ctx.fillStyle = st === 'done' ? '#6BCB77' : (st === 'active' ? '#4D96FF' : '#E3E8EF');
+  ctx.beginPath(); ctx.arc(bx, by, 40, 0, 7); ctx.fill();
+  if (st === 'done'){
+    check(bx, by, 40, '#fff');
+  } else {
+    ctx.fillStyle = st === 'active' ? '#fff' : '#9AA5B4';
+    ctx.font = `bold 44px ${ROUND}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(String(i + 1), bx, by + 2);
+    ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+  }
+  fitFont(s.title, 'bold', 38, ROUND, w - 170);
+  ctx.fillStyle = st === 'upcoming' ? '#9AA5B4' : '#33404F';
+  ctx.fillText(s.title, x + 138, y + 58);
+  fitFont(s.sub, 'bold', 26, ROUND, w - 170);
+  ctx.fillStyle = st === 'upcoming' ? '#B9C1CC' : '#7A8699';
+  ctx.fillText(s.sub, x + 138, y + 98);
+  ctx.restore();
+}
+function drawPanel(t){
+  drawIcon(80, 116, 96, 24);
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#33404F'; ctx.font = `bold 58px ${ROUND}`;
+  ctx.fillText('Install on iPad', 200, 170);
+  ctx.fillStyle = '#7A8699'; ctx.font = `bold 30px ${ROUND}`;
+  ctx.fillText('3 quick taps in Safari', 202, 212);
+  for (let i = 0; i < 3; i++) drawStepCard(i, t);
+  // hint during step 1
+  const ha = prog(t, 3.4, 3.8) * (1 - prog(t, 6.1, 6.4));
+  if (ha > 0){
+    ctx.save();
+    ctx.globalAlpha *= ha;
+    ctx.fillStyle = '#FFF4D6'; rr(80, 730, 620, 72, 24); ctx.fill();
+    ctx.fillStyle = '#8A5A00'; ctx.font = `bold 27px ${ROUND}`;
+    ctx.fillText('No Share button? Tap ••• first', 112, 776);
+    ctx.restore();
+  }
+  // all-done banner
+  const ba = prog(t, 14.4, 15.0);
+  if (ba > 0){
+    const sc = easeBack(ba);
+    ctx.save();
+    ctx.translate(390, 805); ctx.scale(sc, sc); ctx.translate(-390, -805);
+    ctx.shadowColor = 'rgba(63,166,83,0.35)'; ctx.shadowBlur = 30; ctx.shadowOffsetY = 8;
+    ctx.fillStyle = '#6BCB77'; rr(80, 730, 620, 150, 32); ctx.fill();
+    ctx.shadowColor = 'transparent';
+    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(160, 805, 44, 0, 7); ctx.fill();
+    check(160, 805, 44, '#6BCB77');
+    ctx.fillStyle = '#fff'; ctx.font = `bold 50px ${ROUND}`;
+    ctx.fillText('All done!', 228, 800);
+    const sub1 = 1 - prog(t, 18.2, 18.5), sub2 = prog(t, 18.5, 18.8);
+    ctx.font = `bold 27px ${ROUND}`;
+    ctx.globalAlpha *= 1;
+    const base = ctx.globalAlpha;
+    if (sub1 > 0){ ctx.globalAlpha = base * sub1; fitFont('Tap SketchBox to start drawing', 'bold', 27, ROUND, 440); ctx.fillText('Tap SketchBox to start drawing', 230, 842); }
+    if (sub2 > 0){ ctx.globalAlpha = base * sub2; fitFont('It opens full screen, like an app', 'bold', 27, ROUND, 440); ctx.fillText('It opens full screen, like an app', 230, 842); }
+    ctx.globalAlpha = base;
+    ctx.restore();
+  }
+}
+
+/* ---------- glyphs ---------- */
+function chevron(x, y, dir, col){
+  stroke(col, 2.8);
+  ctx.beginPath(); ctx.moveTo(x - 5 * dir, y - 10); ctx.lineTo(x + 5 * dir, y); ctx.lineTo(x - 5 * dir, y + 10); ctx.stroke();
+}
+function shareIcon(cx, cy, s, col){
+  stroke(col, s * 0.1);
+  ctx.beginPath();
+  ctx.moveTo(cx, cy + s * 0.12); ctx.lineTo(cx, cy - s * 0.55);
+  ctx.moveTo(cx - s * 0.24, cy - s * 0.32); ctx.lineTo(cx, cy - s * 0.56); ctx.lineTo(cx + s * 0.24, cy - s * 0.32);
+  ctx.moveTo(cx - s * 0.17, cy - s * 0.12); ctx.lineTo(cx - s * 0.38, cy - s * 0.12); ctx.lineTo(cx - s * 0.38, cy + s * 0.5);
+  ctx.lineTo(cx + s * 0.38, cy + s * 0.5); ctx.lineTo(cx + s * 0.38, cy - s * 0.12); ctx.lineTo(cx + s * 0.17, cy - s * 0.12);
+  ctx.stroke();
+}
+function sidebarIcon(x, y, col){
+  stroke(col, 2.2);
+  rr(x - 12, y - 9, 24, 18, 4); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x - 4, y - 9); ctx.lineTo(x - 4, y + 9); ctx.stroke();
+}
+function plusIcon(x, y, col){
+  stroke(col, 2.6);
+  ctx.beginPath(); ctx.moveTo(x, y - 10); ctx.lineTo(x, y + 10); ctx.moveTo(x - 10, y); ctx.lineTo(x + 10, y); ctx.stroke();
+}
+function tabsIcon(x, y, col){
+  stroke(col, 2.3);
+  rr(x - 10, y - 6, 17, 17, 4); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x - 5, y - 10); ctx.lineTo(x + 7, y - 10); ctx.quadraticCurveTo(x + 11, y - 10, x + 11, y - 6); ctx.lineTo(x + 11, y + 6); ctx.stroke();
+}
+function reloadIcon(x, y, col){
+  stroke(col, 2.2);
+  ctx.beginPath(); ctx.arc(x, y, 8, -Math.PI * 0.3, Math.PI * 1.45); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x + 4, y - 11); ctx.lineTo(x + 7.5, y - 6.5); ctx.lineTo(x + 2, y - 4.5); ctx.stroke();
+}
+function rowIcon(i, x, y){
+  stroke('#1C1C1E', 2);
+  ctx.beginPath();
+  if (i === 0){ ctx.roundRect(x - 9, y - 5, 14, 15, 3); ctx.roundRect(x - 4, y - 10, 14, 15, 3); }
+  else if (i === 1){ ctx.arc(x - 7, y + 2, 5.5, 0, 7); ctx.moveTo(x + 12.5, y + 2); ctx.arc(x + 7, y + 2, 5.5, 0, 7); ctx.moveTo(x - 1.5, y + 1); ctx.lineTo(x + 1.5, y + 1); }
+  else if (i === 2){ ctx.roundRect(x - 10, y - 10, 20, 20, 3); ctx.moveTo(x, y - 10); ctx.lineTo(x, y + 10); }
+  else if (i === 3){ for (let k = 0; k < 10; k++){ const a = -Math.PI / 2 + k * Math.PI / 5, r = k % 2 ? 4.5 : 11; ctx[k ? 'lineTo' : 'moveTo'](x + Math.cos(a) * r, y + Math.sin(a) * r); } ctx.closePath(); }
+  else if (i === 4){ ctx.arc(x - 2, y - 2, 7, 0, 7); ctx.moveTo(x + 3, y + 3); ctx.lineTo(x + 9, y + 9); }
+  else if (i === 5){ ctx.roundRect(x - 11, y - 11, 22, 22, 5); ctx.moveTo(x, y - 6); ctx.lineTo(x, y + 6); ctx.moveTo(x - 6, y); ctx.lineTo(x + 6, y); }
+  else if (i === 6){ ctx.moveTo(x - 9, y + 9); ctx.lineTo(x + 7, y - 7); ctx.moveTo(x + 4, y - 10); ctx.lineTo(x + 10, y - 4); ctx.moveTo(x - 9, y + 9); ctx.lineTo(x - 5, y + 3); }
+  else { ctx.roundRect(x - 11, y - 4, 22, 11, 3); ctx.rect(x - 6, y - 10, 12, 6); ctx.rect(x - 6, y + 4, 12, 7); }
+  ctx.stroke();
+}
+
+/* ---------- iPad screen: status bar, Safari, SketchBox ---------- */
+function drawStatusBar(col){
+  ctx.fillStyle = col; ctx.strokeStyle = col;
+  ctx.font = `600 13px ${SYS}`;
+  ctx.textAlign = 'left'; ctx.fillText('9:41   Mon 16 Oct', 22, 19);
+  ctx.textAlign = 'right'; ctx.fillText('100%', SW - 60, 19);
+  ctx.textAlign = 'left';
+  ctx.lineWidth = 1.4; rr(SW - 54, 9, 26, 12, 3.5); ctx.stroke();
+  rr(SW - 51.5, 11.5, 21, 7, 2); ctx.fill();
+  rr(SW - 27, 13, 2.2, 4, 1); ctx.fill();
+  stroke(col, 2);
+  for (let k = 0; k < 3; k++){ ctx.beginPath(); ctx.arc(SW - 110, 22, 4 + k * 4, -Math.PI * 0.75, -Math.PI * 0.25); ctx.stroke(); }
+}
+function drawDoodle(x, y, w, h){
+  ctx.save();
+  rr(x, y, w, h, 14); ctx.clip();
+  ctx.fillStyle = '#8EDB8E'; ctx.beginPath(); ctx.ellipse(x + w / 2, y + h + 30, w * 0.65, h * 0.24, 0, 0, 7); ctx.fill();
+  ['#EF4444', '#F97316', '#FACC15', '#22C55E', '#2563EB'].forEach((c, i) => {
+    stroke(c, w * 0.036);
+    ctx.beginPath(); ctx.arc(x + w * 0.45, y + h * 0.86, w * 0.34 - i * w * 0.036, Math.PI * 1.02, Math.PI * 1.98); ctx.stroke();
+  });
+  const sx = x + w * 0.8, sy = y + h * 0.2, r = w * 0.075;
+  ctx.fillStyle = '#FACC15'; ctx.beginPath(); ctx.arc(sx, sy, r, 0, 7); ctx.fill();
+  stroke('#FACC15', w * 0.012);
+  for (let i = 0; i < 8; i++){
+    const a = i * Math.PI / 4;
+    ctx.beginPath(); ctx.moveTo(sx + Math.cos(a) * r * 1.35, sy + Math.sin(a) * r * 1.35); ctx.lineTo(sx + Math.cos(a) * r * 1.75, sy + Math.sin(a) * r * 1.75); ctx.stroke();
+  }
+  ctx.restore();
+}
+function drawWebContent(oy){
+  drawIcon(24, oy + 14, 40, 10);
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#33404F'; ctx.font = `bold 26px ${ROUND}`; ctx.fillText('SketchBox', 74, oy + 44);
+  ctx.fillStyle = '#EFE9DF'; rr(SW / 2 - 170, oy + 14, 340, 44, 22); ctx.fill();
+  ctx.fillStyle = '#fff'; rr(SW / 2 - 166, oy + 18, 110, 36, 18); ctx.fill();
+  ctx.font = `bold 16px ${ROUND}`; ctx.textAlign = 'center';
+  ctx.fillStyle = '#E4573D'; ctx.fillText('Draw', SW / 2 - 111, oy + 42);
+  ctx.fillStyle = '#7A8699'; ctx.fillText('Pixel Art', SW / 2, oy + 42); ctx.fillText('Animate', SW / 2 + 112, oy + 42);
+  ctx.textAlign = 'left';
+  for (let i = 0; i < 5; i++){
+    const x = SW - 24 - 46 - (4 - i) * 54;
+    ctx.save();
+    ctx.shadowColor = 'rgba(51,64,79,0.10)'; ctx.shadowBlur = 8; ctx.shadowOffsetY = 2;
+    ctx.fillStyle = i === 4 ? '#6BCB77' : '#fff'; rr(x, oy + 12, 46, 46, 13); ctx.fill();
+    ctx.restore();
+    ctx.fillStyle = i === 4 ? '#fff' : '#9CA3AF';
+    ctx.beginPath(); ctx.arc(x + 23, oy + 35, 6, 0, 7); ctx.fill();
+  }
+  const cw = 560, ch = 420, cx = (SW - cw) / 2, cy = oy + 76;
+  ctx.save();
+  ctx.shadowColor = 'rgba(51,64,79,0.14)'; ctx.shadowBlur = 20; ctx.shadowOffsetY = 6;
+  ctx.fillStyle = '#fff'; rr(cx, cy, cw, ch, 14); ctx.fill();
+  ctx.restore();
+  drawDoodle(cx, cy, cw, ch);
+  const tw = 52, gap = 12, tx0 = (SW - (7 * tw + 6 * gap)) / 2;
+  for (let i = 0; i < 7; i++){
+    const x = tx0 + i * (tw + gap);
+    ctx.save();
+    ctx.shadowColor = 'rgba(51,64,79,0.10)'; ctx.shadowBlur = 8; ctx.shadowOffsetY = 2;
+    ctx.fillStyle = i === 0 ? '#E3EEFF' : '#fff'; rr(x, oy + 516, tw, tw, 15); ctx.fill();
+    ctx.restore();
+    if (i === 0){ stroke('#4D96FF', 3); rr(x + 1.5, oy + 517.5, tw - 3, tw - 3, 14); ctx.stroke(); }
+    ctx.fillStyle = i === 0 ? '#2563EB' : '#9CA3AF';
+    ctx.beginPath(); ctx.arc(x + tw / 2, oy + 542, 8, 0, 7); ctx.fill();
+  }
+  const pal = ['#1F2937', '#9CA3AF', '#FFFFFF', '#EF4444', '#F97316', '#FACC15', '#22C55E', '#15803D', '#14B8A6', '#38BDF8', '#2563EB', '#8B5CF6', '#EC4899', '#FBCFE8', '#8D5524', '#F1C27D'];
+  pal.forEach((c, i) => {
+    const x = SW / 2 - 300 + i * 40;
+    ctx.fillStyle = c; ctx.beginPath(); ctx.arc(x, oy + 624, 15, 0, 7); ctx.fill();
+    if (c === '#FFFFFF'){ stroke('rgba(0,0,0,0.12)', 2); ctx.stroke(); }
+  });
+}
+const SHARE_X = SW - 150;
+function drawSafariToolbar(){
+  ctx.fillStyle = '#F7F7F8'; ctx.fillRect(0, 0, SW, 80);
+  ctx.fillStyle = 'rgba(0,0,0,0.12)'; ctx.fillRect(0, 80, SW, 1);
+  drawStatusBar('#000');
+  const y = 53;
+  sidebarIcon(36, y, BLUE);
+  chevron(88, y, -1, BLUE);
+  chevron(126, y, 1, '#B8B8BD');
+  ctx.fillStyle = '#E4E4E8'; rr(SW / 2 - 260, 34, 520, 38, 11); ctx.fill();
+  ctx.fillStyle = '#1C1C1E'; ctx.font = `500 16px ${SYS}`; ctx.textAlign = 'center';
+  ctx.fillText('juqboxmusic.github.io', SW / 2, 59);
+  ctx.font = `600 14px ${SYS}`; ctx.textAlign = 'left'; ctx.fillText('AA', SW / 2 - 246, 59);
+  reloadIcon(SW / 2 + 236, 53, '#1C1C1E');
+  shareIcon(SHARE_X, y + 2, 26, BLUE);
+  plusIcon(SHARE_X + 52, y, BLUE);
+  tabsIcon(SHARE_X + 102, y, BLUE);
+}
+
+/* ---------- share popover ---------- */
+const POP_W = 360, POP_X = SHARE_X - POP_W + 60, POP_Y = 92, POP_H = 600;
+const ROWS = ['Copy', 'Add to Reading List', 'Add Bookmark', 'Add to Favourites', 'Find on Page', 'Add to Home Screen', 'Markup', 'Print'];
+const HOME_ROW = 5, ROW_H = 50;
+const popScroll = t => -96 * easeInOut(prog(t, 7.2, 8.0));
+const popRowCentre = t => POP_Y + 100 + popScroll(t) + 100 + HOME_ROW * ROW_H + ROW_H / 2;
+function drawPopover(t, a){
+  ctx.save();
+  ctx.globalAlpha *= a;
+  const s = 0.92 + 0.08 * a;
+  ctx.translate(SHARE_X, 80); ctx.scale(s, s); ctx.translate(-SHARE_X, -80);
+  ctx.shadowColor = 'rgba(0,0,0,0.22)'; ctx.shadowBlur = 36; ctx.shadowOffsetY = 10;
+  ctx.fillStyle = '#F2F2F7';
+  ctx.beginPath();
+  ctx.roundRect(POP_X, POP_Y, POP_W, POP_H, 18);
+  ctx.moveTo(SHARE_X - 15, POP_Y + 1); ctx.lineTo(SHARE_X, POP_Y - 13); ctx.lineTo(SHARE_X + 15, POP_Y + 1);
+  ctx.fill();
+  ctx.shadowColor = 'transparent';
+  drawIcon(POP_X + 16, POP_Y + 18, 50, 11);
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#1C1C1E'; ctx.font = `600 17px ${SYS}`; ctx.fillText('SketchBox', POP_X + 78, POP_Y + 40);
+  ctx.fillStyle = '#8E8E93'; ctx.font = `400 14px ${SYS}`; ctx.fillText('juqboxmusic.github.io', POP_X + 78, POP_Y + 61);
+  ctx.fillStyle = '#E3E3E8'; ctx.beginPath(); ctx.arc(POP_X + POP_W - 30, POP_Y + 40, 14, 0, 7); ctx.fill();
+  stroke('#8E8E93', 2.2);
+  ctx.beginPath();
+  ctx.moveTo(POP_X + POP_W - 35, POP_Y + 35); ctx.lineTo(POP_X + POP_W - 25, POP_Y + 45);
+  ctx.moveTo(POP_X + POP_W - 25, POP_Y + 35); ctx.lineTo(POP_X + POP_W - 35, POP_Y + 45);
+  ctx.stroke();
+  ctx.fillStyle = 'rgba(0,0,0,0.1)'; ctx.fillRect(POP_X, POP_Y + 86, POP_W, 1);
+  ctx.save();
+  ctx.beginPath(); ctx.roundRect(POP_X, POP_Y + 87, POP_W, POP_H - 87, [0, 0, 18, 18]); ctx.clip();
+  const y0 = POP_Y + 100 + popScroll(t);
+  [['AirDrop', '#4FA8F8', true], ['Messages', '#34C759'], ['Mail', '#2F8CF7'], ['Notes', '#F7CE46']].forEach(([name, col, round], i) => {
+    const cx = POP_X + 50 + i * 87;
+    ctx.fillStyle = col;
+    if (round){ ctx.beginPath(); ctx.arc(cx, y0 + 28, 28, 0, 7); ctx.fill(); }
+    else { rr(cx - 28, y0, 56, 56, 13); ctx.fill(); }
+    ctx.fillStyle = 'rgba(255,255,255,0.9)'; ctx.beginPath(); ctx.arc(cx, y0 + 28, 10, 0, 7); ctx.fill();
+    ctx.fillStyle = '#1C1C1E'; ctx.font = `400 12px ${SYS}`; ctx.textAlign = 'center';
+    ctx.fillText(name, cx, y0 + 74);
+  });
+  ctx.textAlign = 'left';
+  const ly = y0 + 100, lx = POP_X + 14, lw = POP_W - 28;
+  ctx.fillStyle = '#fff'; rr(lx, ly, lw, ROWS.length * ROW_H, 12); ctx.fill();
+  const pressed = t >= 10.0 && t < 10.6;
+  ROWS.forEach((label, i) => {
+    const ry = ly + i * ROW_H;
+    if (i === HOME_ROW && pressed){ ctx.fillStyle = '#D1D1D6'; ctx.fillRect(lx, ry, lw, ROW_H); }
+    if (i > 0){ ctx.fillStyle = 'rgba(60,60,67,0.18)'; ctx.fillRect(lx + 16, ry, lw - 16, 1); }
+    ctx.fillStyle = '#1C1C1E'; ctx.font = `400 16px ${SYS}`;
+    ctx.fillText(label, lx + 16, ry + 31);
+    rowIcon(i, lx + lw - 26, ry + ROW_H / 2);
+  });
+  if (t >= 8.2 && t < 10.05){
+    const g = 0.5 + 0.5 * Math.sin((t - 8.2) * 9);
+    stroke(`rgba(255,190,0,${0.55 + 0.4 * g})`, 4.5);
+    rr(lx - 2, ly + HOME_ROW * ROW_H - 2, lw + 4, ROW_H + 4, 12); ctx.stroke();
+  }
+  ctx.restore();
+  ctx.restore();
+}
+
+/* ---------- add to home screen box ---------- */
+const MW = 540, MH = 400, MX = (SW - MW) / 2, MY = (SH - MH) / 2 + 10;
+function drawModal(t, a){
+  ctx.fillStyle = `rgba(0,0,0,${0.3 * a})`; ctx.fillRect(0, 0, SW, SH);
+  const y = MY + (1 - a) * 60;
+  ctx.save();
+  ctx.globalAlpha *= a;
+  ctx.shadowColor = 'rgba(0,0,0,0.25)'; ctx.shadowBlur = 40; ctx.shadowOffsetY = 12;
+  ctx.fillStyle = '#F2F2F7'; rr(MX, y, MW, MH, 18); ctx.fill();
+  ctx.shadowColor = 'transparent';
+  const pressed = t >= 13.2 && t < 13.6;
+  ctx.font = `400 17px ${SYS}`; ctx.fillStyle = BLUE; ctx.textAlign = 'left'; ctx.fillText('Cancel', MX + 20, y + 38);
+  ctx.font = `600 17px ${SYS}`; ctx.fillStyle = '#1C1C1E'; ctx.textAlign = 'center'; ctx.fillText('Add to Home Screen', MX + MW / 2, y + 38);
+  ctx.textAlign = 'right'; ctx.fillStyle = pressed ? 'rgba(0,122,255,0.35)' : BLUE; ctx.fillText('Add', MX + MW - 22, y + 38);
+  ctx.textAlign = 'left';
+  if (t >= 11.6 && t < 13.25){
+    const g = 0.5 + 0.5 * Math.sin((t - 11.6) * 9);
+    stroke(`rgba(255,190,0,${0.55 + 0.4 * g})`, 4);
+    rr(MX + MW - 76, y + 12, 64, 38, 19); ctx.stroke();
+  }
+  ctx.fillStyle = 'rgba(0,0,0,0.1)'; ctx.fillRect(MX, y + 60, MW, 1);
+  ctx.fillStyle = '#fff'; rr(MX + 16, y + 76, MW - 32, 140, 14); ctx.fill();
+  drawIcon(MX + 32, y + 104, 84, 19);
+  ctx.fillStyle = '#1C1C1E'; ctx.font = `400 18px ${SYS}`; ctx.fillText('SketchBox', MX + 136, y + 128);
+  ctx.fillStyle = '#C7C7CC'; ctx.beginPath(); ctx.arc(MX + MW - 46, y + 122, 10, 0, 7); ctx.fill();
+  stroke('#fff', 2);
+  ctx.beginPath();
+  ctx.moveTo(MX + MW - 50, y + 118); ctx.lineTo(MX + MW - 42, y + 126);
+  ctx.moveTo(MX + MW - 42, y + 118); ctx.lineTo(MX + MW - 50, y + 126);
+  ctx.stroke();
+  ctx.fillStyle = 'rgba(60,60,67,0.2)'; ctx.fillRect(MX + 136, y + 152, MW - 168, 1);
+  ctx.fillStyle = '#8E8E93'; ctx.font = `400 15px ${SYS}`; ctx.fillText('juqboxmusic.github.io', MX + 136, y + 186);
+  ctx.font = `400 14px ${SYS}`;
+  wrap('An icon will be added to your Home Screen so you can quickly access this website.', MX + 24, y + 252, MW - 48, 19);
+  ctx.restore();
+}
+
+/* ---------- iPad home screen ---------- */
+const APPS = [['Photos', '#FFB8C6'], ['Camera', '#9AA5B1'], ['Clock', '#2D3748'], ['Weather', '#63B3ED'], ['Music', '#FC8181'], ['Maps', '#68D391'],
+  ['Notes', '#F6E05E'], ['Books', '#F6AD55'], ['Calendar', '#F687B3']];
+const HICON = 76;
+const homeSlot = i => ({ x: 170 + (i % 6) * 140, y: 96 + Math.floor(i / 6) * 150 });
+function appIcon(cx, top, size, col){
+  ctx.fillStyle = col; rr(cx - size / 2, top, size, size, size * 0.23); ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,0.75)'; ctx.beginPath(); ctx.arc(cx, top + size / 2, size * 0.2, 0, 7); ctx.fill();
+}
+function drawHome(t){
+  const A = ctx.globalAlpha;
+  const g = ctx.createLinearGradient(0, 0, SW, SH);
+  g.addColorStop(0, '#8EC5FC'); g.addColorStop(0.55, '#C3B5FD'); g.addColorStop(1, '#FBC2EB');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, SW, SH);
+  drawStatusBar('#fff');
+  ctx.textAlign = 'center';
+  APPS.forEach(([n, c], i) => {
+    const s = homeSlot(i);
+    appIcon(s.x, s.y, HICON, c);
+    ctx.fillStyle = '#fff'; ctx.font = `500 13px ${SYS}`;
+    ctx.fillText(n, s.x, s.y + HICON + 20);
+  });
+  const s = homeSlot(9);
+  const pop = prog(t, 14.6, 15.2);
+  if (pop > 0){
+    const press = t >= 17.5 && t < 17.8 ? 0.9 : 1;
+    const sc = easeBack(pop) * press;
+    const gl = prog(t, 14.8, 15.6) * (1 - prog(t, 16.6, 17.4));
+    ctx.save();
+    ctx.translate(s.x, s.y + HICON / 2); ctx.scale(sc, sc);
+    ctx.shadowColor = `rgba(255,214,10,${0.95 * gl})`; ctx.shadowBlur = 44 * gl;
+    ctx.fillStyle = '#fff'; rr(-HICON / 2, -HICON / 2, HICON, HICON, 18); ctx.fill();
+    ctx.shadowColor = 'transparent';
+    rr(-HICON / 2, -HICON / 2, HICON, HICON, 18); ctx.clip();
+    ctx.drawImage(icon, -HICON / 2, -HICON / 2, HICON, HICON);
+    ctx.restore();
+    ctx.globalAlpha = A * clamp(pop * 2);
+    ctx.fillStyle = '#fff'; ctx.font = `600 13px ${SYS}`;
+    ctx.fillText('SketchBox', s.x, s.y + HICON + 20);
+    ctx.globalAlpha = A;
+    const sp = prog(t, 14.9, 16.1);
+    if (sp > 0 && sp < 1){
+      const cols = ['#FFD93D', '#FF6B6B', '#4D96FF', '#6BCB77'];
+      for (let k = 0; k < 8; k++){
+        const a = k * Math.PI / 4 + 0.3, d = 52 + 64 * easeOut(sp);
+        sparkle(s.x + Math.cos(a) * d, s.y + HICON / 2 + Math.sin(a) * d, 10 * (1 - sp) + 4, cols[k % 4], 1 - sp);
+      }
+    }
+  }
+  ctx.fillStyle = 'rgba(255,255,255,0.32)'; rr(SW / 2 - 300, SH - 112, 600, 96, 30); ctx.fill();
+  ['#68D391', '#63B3ED', '#F6E05E', '#FC8181', '#B794F4', '#4FD1C5'].forEach((c, i) => appIcon(SW / 2 - 230 + i * 92, SH - 96, 64, c));
+  ctx.textAlign = 'left';
+}
+
+/* ---------- screen composition ---------- */
+function drawSafariLayer(t){
+  ctx.fillStyle = '#FDF9F3'; ctx.fillRect(0, 0, SW, SH);
+  drawWebContent(80);
+  drawSafariToolbar();
+  const pop = easeOut(prog(t, 5.7, 6.2)) * (1 - prog(t, 10.6, 10.9));
+  if (pop > 0) drawPopover(t, pop);
+  const m = easeOut(prog(t, 10.6, 11.2));
+  if (m > 0) drawModal(t, m);
+}
+function drawAppFullscreen(){
+  ctx.fillStyle = '#FDF9F3'; ctx.fillRect(0, 0, SW, SH);
+  drawStatusBar('#000');
+  drawWebContent(53);
+}
+function drawScreen(t){
+  const home = easeInOut(prog(t, 13.6, 14.3));
+  const open = easeInOut(prog(t, 17.7, 18.4));
+  if (home < 1) drawSafariLayer(t);
+  if (home > 0 && open < 1){
+    ctx.save();
+    ctx.globalAlpha = home;
+    const z = lerp(1.06, 1, home);
+    ctx.translate(SW / 2, SH / 2); ctx.scale(z, z); ctx.translate(-SW / 2, -SH / 2);
+    drawHome(t);
+    ctx.restore();
+  }
+  if (open > 0){
+    const s = homeSlot(9);
+    ctx.save();
+    ctx.globalAlpha = clamp(open * 1.6);
+    const sc = lerp(HICON / SW, 1, open);
+    ctx.translate(lerp(s.x, SW / 2, open), lerp(s.y + HICON / 2, SH / 2, open));
+    ctx.scale(sc, sc);
+    ctx.translate(-SW / 2, -SH / 2);
+    ctx.beginPath(); ctx.roundRect(0, 0, SW, SH, lerp(120, 0, open)); ctx.clip();
+    drawAppFullscreen();
+    ctx.restore();
+  }
+}
+function drawDevice(t){
+  ctx.save();
+  ctx.shadowColor = 'rgba(0,0,0,0.28)'; ctx.shadowBlur = 50; ctx.shadowOffsetY = 20;
+  ctx.fillStyle = '#1C1C1E'; rr(DX, DY, DW, DH, 46); ctx.fill();
+  ctx.restore();
+  ctx.fillStyle = '#2F2F33'; ctx.beginPath(); ctx.arc(DX + DW / 2, DY + 11, 4, 0, 7); ctx.fill();
+  ctx.save();
+  rr(SX, SY, SW, SH, 22); ctx.clip();
+  ctx.translate(SX, SY);
+  drawScreen(t);
+  ctx.restore();
+}
+
+/* ---------- finger taps ---------- */
+const TAPS = [
+  { appear: 3.9,  arrive: 5.0,  tap: 5.4,  leave: 5.8,  from: [SX + 640, SY + 560], to: () => [SX + SHARE_X, SY + 55] },
+  { appear: 8.4,  arrive: 9.5,  tap: 10.0, leave: 10.4, from: [SX + 520, SY + 660], to: t => [SX + POP_X + POP_W * 0.74, SY + popRowCentre(t)] },
+  { appear: 11.8, arrive: 12.8, tap: 13.2, leave: 13.6, from: [SX + 600, SY + 620], to: () => [SX + MX + MW - 44, SY + MY + 32] },
+  { appear: 16.6, arrive: 17.2, tap: 17.5, leave: 17.9, from: [SX + 820, SY + 620], to: () => { const s = homeSlot(9); return [SX + s.x, SY + s.y + HICON / 2]; } }
+];
+function drawTouches(t){
+  for (const k of TAPS){
+    if (t < k.appear || t > k.leave + 0.6) continue;
+    const m = easeInOut(prog(t, k.appear, k.arrive));
+    const [tx, ty] = k.to(t);
+    const x = lerp(k.from[0], tx, m), y = lerp(k.from[1], ty, m);
+    const a = Math.min(prog(t, k.appear, k.appear + 0.25), 1 - prog(t, k.leave, k.leave + 0.3));
+    const press = 1 - 0.25 * Math.max(0, 1 - Math.abs(t - k.tap) / 0.15);
+    const rp = prog(t, k.tap, k.tap + 0.55);
+    const base = ctx.globalAlpha;
+    if (rp > 0 && rp < 1){
+      stroke(`rgba(77,150,255,${0.85 * (1 - rp)})`, 6);
+      ctx.beginPath(); ctx.arc(x, y, 30 + 54 * easeOut(rp), 0, 7); ctx.stroke();
+    }
+    if (a <= 0) continue;
+    ctx.save();
+    ctx.globalAlpha = base * a;
+    ctx.shadowColor = 'rgba(0,0,0,0.3)'; ctx.shadowBlur = 14; ctx.shadowOffsetY = 4;
+    ctx.fillStyle = 'rgba(255,255,255,0.72)'; ctx.beginPath(); ctx.arc(x, y, 32 * press, 0, 7); ctx.fill();
+    ctx.shadowColor = 'transparent';
+    stroke('rgba(51,64,79,0.6)', 4);
+    ctx.beginPath(); ctx.arc(x, y, 32 * press, 0, 7); ctx.stroke();
+    ctx.restore();
+  }
+}
+
+/* ---------- whole frame ---------- */
+function render(t){
+  ctx.save();
+  drawBackground();
+  const introA = 1 - prog(t, 2.4, 2.9);
+  if (introA > 0) drawIntro(t, introA);
+  const inK = easeOut(prog(t, 2.7, 3.5));
+  const outK = easeInOut(prog(t, 21.5, 22.2));
+  const layoutA = Math.min(prog(t, 2.7, 3.2), 1 - outK);
+  if (layoutA > 0){
+    ctx.save();
+    ctx.globalAlpha = layoutA;
+    ctx.save(); ctx.translate(-(1 - inK) * 260, 0); drawPanel(t); ctx.restore();
+    ctx.save(); ctx.translate((1 - inK) * 520, 0); drawDevice(t); drawTouches(t); ctx.restore();
+    ctx.restore();
+  }
+  const outroA = easeOut(prog(t, 21.9, 22.7));
+  if (outroA > 0) drawOutro(t, outroA);
+  ctx.restore();
+}
+
+/* YouTube thumbnail: big headline left, installed icon on the iPad right */
+function renderThumbnail(){
+  drawBackground();
+  ctx.save();
+  drawDevice(15.8);
+  ctx.restore();
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#33404F'; ctx.font = `bold 118px ${ROUND}`;
+  ctx.fillText('Install', 70, 330);
+  ctx.fillStyle = '#2F7BF5';
+  ctx.fillText('SketchBox', 70, 470);
+  ctx.fillStyle = '#33404F';
+  ctx.fillText('on iPad', 70, 610);
+  ctx.save();
+  ctx.translate(250, 740); ctx.rotate(-0.05);
+  ctx.shadowColor = 'rgba(0,0,0,0.18)'; ctx.shadowBlur = 20; ctx.shadowOffsetY = 8;
+  ctx.fillStyle = '#FFD93D'; rr(-180, -58, 360, 116, 58); ctx.fill();
+  ctx.shadowColor = 'transparent';
+  ctx.fillStyle = '#33404F'; ctx.font = `bold 54px ${ROUND}`; ctx.textAlign = 'center';
+  ctx.fillText('3 easy taps!', 0, 19);
+  ctx.restore();
+  // big app icon overlapping the iPad corner
+  ctx.save();
+  ctx.translate(690, 830); ctx.rotate(0.08);
+  ctx.shadowColor = 'rgba(0,0,0,0.3)'; ctx.shadowBlur = 40; ctx.shadowOffsetY = 16;
+  ctx.fillStyle = '#fff'; rr(-120, -120, 240, 240, 56); ctx.fill();
+  ctx.shadowColor = 'transparent';
+  drawIcon(-120, -120, 240, 56);
+  ctx.restore();
+  ctx.textAlign = 'left';
+}
+
+/* ---------- recording (WebCodecs H.264 → MP4) ---------- */
+async function record(){
+  await icon.decode();
+  let config = null;
+  for (const codec of ['avc1.640028', 'avc1.4d0028', 'avc1.42e028']){
+    const c = { codec, width: VW, height: VH, bitrate: 6_000_000, framerate: FPS, avc: { format: 'avc' } };
+    if ((await VideoEncoder.isConfigSupported(c)).supported){ config = c; break; }
+  }
+  if (!config) throw new Error('1080p H.264 encoding not supported here');
+  const KEY_TIMES = [0.7, 3.5, 6.3, 11.3, 14.4, 18.5, 22.8];
+  const isKey = i => i % 30 === 0 || KEY_TIMES.some(k => Math.abs(i / FPS - k) < 0.5 / FPS);
+  const muxer = new Mp4Muxer.Muxer({
+    target: new Mp4Muxer.ArrayBufferTarget(),
+    video: { codec: 'avc', width: VW, height: VH, frameRate: FPS },
+    fastStart: 'in-memory'
+  });
+  let failure = null;
+  const encoder = new VideoEncoder({
+    output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
+    error: e => { failure = e; }
+  });
+  encoder.configure(config);
+  const total = Math.round(DURATION * FPS);
+  for (let i = 0; i < total; i++){
+    render(i / FPS);
+    const frame = new VideoFrame(cv, { timestamp: Math.round(i * 1e6 / FPS), duration: Math.round(1e6 / FPS) });
+    encoder.encode(frame, { keyFrame: isKey(i) });
+    frame.close();
+    while (encoder.encodeQueueSize > 8) await new Promise(r => setTimeout(r, 5));
+    if (failure) throw failure;
+  }
+  await encoder.flush();
+  muxer.finalize();
+  const buf = muxer.target.buffer;
+  const res = await fetch('/save/install-ipad-youtube.mp4', { method: 'POST', body: buf });
+  renderThumbnail();
+  const tc = document.createElement('canvas');
+  tc.width = 1280; tc.height = 720;
+  const tx = tc.getContext('2d');
+  tx.imageSmoothingQuality = 'high';
+  tx.drawImage(cv, 0, 0, 1280, 720);
+  const thumb = await new Promise(r => tc.toBlob(r, 'image/png'));
+  await fetch('/save/install-ipad-thumbnail.png', { method: 'POST', body: thumb });
+  show(+document.getElementById('scrub').value);
+  return { codec: config.codec, bytes: buf.byteLength, thumbBytes: thumb.size, frames: total, saved: res.ok };
+}
+
+/* ---------- preview UI ---------- */
+const scrub = document.getElementById('scrub');
+const status = document.getElementById('status');
+function show(t){ render(t); status.textContent = 't=' + t.toFixed(2) + 's'; }
+scrub.addEventListener('input', () => show(+scrub.value));
+icon.decode().then(() => show(0));
+window.render = render;
+window.show = show;
+window.record = record;
+window.renderThumbnail = renderThumbnail;
+</script>
+</body>
+</html>
