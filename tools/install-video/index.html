@@ -1,0 +1,534 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Install video</title>
+<style>
+  body{margin:0;background:#2b2b2b;color:#eee;font-family:system-ui;display:flex;flex-direction:column;align-items:center;gap:8px;padding:10px}
+  canvas{height:calc(100vh - 70px);max-width:100%;background:#fff;border-radius:8px}
+  #status{font-size:13px}
+</style>
+<script src="https://cdn.jsdelivr.net/npm/mp4-muxer@5.2.1/build/mp4-muxer.min.js"></script>
+</head>
+<body>
+<canvas id="cv" width="720" height="1280"></canvas>
+<div><input type="range" id="scrub" min="0" max="15.95" step="0.05" value="0" style="width:420px"> <span id="status">t=0</span></div>
+<script>
+'use strict';
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+const VW = 720, VH = 1280, DURATION = 16, FPS = 30;
+const ROUND = '"Arial Rounded MT Bold", "Nunito", system-ui, sans-serif';
+const SYS = '-apple-system, "SF Pro Text", "Helvetica Neue", Helvetica, sans-serif';
+const BLUE = '#007AFF';
+const icon = new Image();
+icon.src = '/icon-512.png';
+
+// phone geometry (video coords); screen content is drawn in screen coords
+const PX = 125, PY = 258, PW = 470, PH = 992, BEZ = 14;
+const SX = PX + BEZ, SY = PY + BEZ, SW = PW - 2 * BEZ, SH = PH - 2 * BEZ;
+
+/* ---------- helpers ---------- */
+const clamp = (v, a = 0, b = 1) => Math.max(a, Math.min(b, v));
+const prog = (t, a, b) => clamp((t - a) / (b - a));
+const lerp = (a, b, k) => a + (b - a) * k;
+const easeOut = x => 1 - Math.pow(1 - x, 3);
+const easeInOut = x => x < .5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2;
+const easeBack = x => { const c1 = 1.70158, c3 = c1 + 1; return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2); };
+function rr(x, y, w, h, r){ ctx.beginPath(); ctx.roundRect(x, y, w, h, r); }
+function fitFont(text, weight, size, family, maxW){
+  let s = size;
+  ctx.font = `${weight} ${s}px ${family}`;
+  while (ctx.measureText(text).width > maxW && s > 10){ s--; ctx.font = `${weight} ${s}px ${family}`; }
+}
+function wrap(text, x, y, maxW, lh){
+  let line = '';
+  for (const w of text.split(' ')){
+    const test = line ? line + ' ' + w : w;
+    if (ctx.measureText(test).width > maxW && line){ ctx.fillText(line, x, y); line = w; y += lh; }
+    else line = test;
+  }
+  if (line) ctx.fillText(line, x, y);
+}
+function drawIcon(x, y, s, r){
+  ctx.save(); rr(x, y, s, s, r); ctx.clip(); ctx.drawImage(icon, x, y, s, s); ctx.restore();
+}
+
+/* ---------- background & captions ---------- */
+function drawBackground(){
+  ctx.fillStyle = '#FDF9F3';
+  ctx.fillRect(0, 0, VW, VH);
+  const blobs = [[50, 330, 150, '#FF6B6B'], [690, 560, 170, '#FFD93D'], [30, 1080, 170, '#4D96FF'], [700, 1190, 150, '#6BCB77']];
+  for (const [x, y, r, c] of blobs){
+    ctx.globalAlpha = 0.14;
+    ctx.fillStyle = c;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+const CAPTIONS = [
+  { from: 0,    to: 1.6,  badge: 'icon', title: 'Get the SketchBox app', sub: 'Add it to your Home Screen in 3 taps' },
+  { from: 1.6,  to: 4.4,  badge: '1',    title: 'Tap the Share button', sub: 'No Share button? Tap ••• first' },
+  { from: 4.4,  to: 8.4,  badge: '2',    title: 'Tap Add to Home Screen', sub: 'You might need to scroll down a little' },
+  { from: 8.4,  to: 11.2, badge: '3',    title: 'Tap Add', sub: 'It’s in the top corner' },
+  { from: 11.2, to: 16,   badge: 'done', title: 'All done!', sub: 'Tap SketchBox to start drawing' }
+];
+function drawCaption(c){
+  const x = 40, y = 46, w = 640, h = 170;
+  ctx.save();
+  ctx.shadowColor = 'rgba(51,64,79,0.16)'; ctx.shadowBlur = 30; ctx.shadowOffsetY = 10;
+  ctx.fillStyle = '#fff'; rr(x, y, w, h, 36); ctx.fill();
+  ctx.restore();
+  const bx = x + 88, by = y + h / 2;
+  if (c.badge === 'icon'){
+    drawIcon(bx - 50, by - 50, 100, 24);
+  } else if (c.badge === 'done'){
+    ctx.fillStyle = '#6BCB77'; ctx.beginPath(); ctx.arc(bx, by, 48, 0, 7); ctx.fill();
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 10; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    ctx.beginPath(); ctx.moveTo(bx - 20, by + 2); ctx.lineTo(bx - 5, by + 17); ctx.lineTo(bx + 22, by - 16); ctx.stroke();
+  } else {
+    ctx.fillStyle = '#4D96FF'; ctx.beginPath(); ctx.arc(bx, by, 48, 0, 7); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.font = `bold 54px ${ROUND}`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(c.badge, bx, by + 3);
+  }
+  ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+  const tx = x + 168, maxW = w - 168 - 30;
+  fitFont(c.title, 'bold', 42, ROUND, maxW);
+  ctx.fillStyle = '#33404F'; ctx.fillText(c.title, tx, y + 82);
+  fitFont(c.sub, 'normal', 25, ROUND, maxW);
+  ctx.fillStyle = '#7A8699'; ctx.fillText(c.sub, tx, y + 126);
+}
+function drawCaptions(t){
+  // loop hand-off: last caption leaves before the first returns
+  const lastOut = prog(t, 15.35, 15.65), firstBack = prog(t, 15.7, 16);
+  CAPTIONS.forEach((c, i) => {
+    let a, dy = 0;
+    if (i === 0){
+      a = t < c.to ? 1 - prog(t, c.to - 0.2, c.to) : firstBack;
+    } else if (t < c.from || t >= c.to){
+      a = 0;
+    } else {
+      const fin = prog(t, c.from, c.from + 0.25);
+      const fout = c.to >= DURATION ? 1 - lastOut : 1 - prog(t, c.to - 0.2, c.to);
+      a = Math.min(fin, fout);
+      dy = (1 - easeOut(fin)) * 24;
+    }
+    if (a <= 0) return;
+    ctx.save(); ctx.globalAlpha = a; ctx.translate(0, dy); drawCaption(c); ctx.restore();
+  });
+}
+
+/* ---------- small glyphs ---------- */
+function stroke(col, lw){ ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; }
+function chevron(x, y, dir, col){
+  stroke(col, 3);
+  ctx.beginPath(); ctx.moveTo(x - 5 * dir, y - 11); ctx.lineTo(x + 5 * dir, y); ctx.lineTo(x - 5 * dir, y + 11); ctx.stroke();
+}
+function shareIcon(cx, cy, s, col){
+  stroke(col, s * 0.1);
+  ctx.beginPath();
+  ctx.moveTo(cx, cy + s * 0.12); ctx.lineTo(cx, cy - s * 0.55);
+  ctx.moveTo(cx - s * 0.24, cy - s * 0.32); ctx.lineTo(cx, cy - s * 0.56); ctx.lineTo(cx + s * 0.24, cy - s * 0.32);
+  ctx.moveTo(cx - s * 0.17, cy - s * 0.12); ctx.lineTo(cx - s * 0.38, cy - s * 0.12); ctx.lineTo(cx - s * 0.38, cy + s * 0.5);
+  ctx.lineTo(cx + s * 0.38, cy + s * 0.5); ctx.lineTo(cx + s * 0.38, cy - s * 0.12); ctx.lineTo(cx + s * 0.17, cy - s * 0.12);
+  ctx.stroke();
+}
+function bookIcon(x, y, col){
+  stroke(col, 2.4);
+  ctx.beginPath();
+  ctx.moveTo(x, y - 7); ctx.quadraticCurveTo(x - 6, y - 11, x - 13, y - 10); ctx.lineTo(x - 13, y + 9); ctx.quadraticCurveTo(x - 6, y + 8, x, y + 11);
+  ctx.quadraticCurveTo(x + 6, y + 8, x + 13, y + 9); ctx.lineTo(x + 13, y - 10); ctx.quadraticCurveTo(x + 6, y - 11, x, y - 7); ctx.lineTo(x, y + 11);
+  ctx.stroke();
+}
+function tabsIcon(x, y, col){
+  stroke(col, 2.4);
+  rr(x - 10, y - 6, 17, 17, 4); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x - 5, y - 10); ctx.lineTo(x + 7, y - 10); ctx.quadraticCurveTo(x + 11, y - 10, x + 11, y - 6); ctx.lineTo(x + 11, y + 6); ctx.stroke();
+}
+function rowIcon(i, x, y){
+  stroke('#1C1C1E', 2);
+  ctx.beginPath();
+  if (i === 0){ ctx.roundRect(x - 9, y - 5, 14, 15, 3); ctx.roundRect(x - 4, y - 10, 14, 15, 3); }
+  else if (i === 1){ ctx.arc(x - 7, y + 2, 5.5, 0, 7); ctx.moveTo(x + 12.5, y + 2); ctx.arc(x + 7, y + 2, 5.5, 0, 7); ctx.moveTo(x - 1.5, y + 1); ctx.lineTo(x + 1.5, y + 1); }
+  else if (i === 2){ ctx.roundRect(x - 10, y - 10, 20, 20, 3); ctx.moveTo(x, y - 10); ctx.lineTo(x, y + 10); }
+  else if (i === 3){ for (let k = 0; k < 10; k++){ const a = -Math.PI / 2 + k * Math.PI / 5, r = k % 2 ? 4.5 : 11; ctx[k ? 'lineTo' : 'moveTo'](x + Math.cos(a) * r, y + Math.sin(a) * r); } ctx.closePath(); }
+  else if (i === 4){ ctx.arc(x - 2, y - 2, 7, 0, 7); ctx.moveTo(x + 3, y + 3); ctx.lineTo(x + 9, y + 9); }
+  else if (i === 5){ ctx.roundRect(x - 11, y - 11, 22, 22, 5); ctx.moveTo(x, y - 6); ctx.lineTo(x, y + 6); ctx.moveTo(x - 6, y); ctx.lineTo(x + 6, y); }
+  else if (i === 6){ ctx.moveTo(x - 9, y + 9); ctx.lineTo(x + 7, y - 7); ctx.moveTo(x + 4, y - 10); ctx.lineTo(x + 10, y - 4); ctx.moveTo(x - 9, y + 9); ctx.lineTo(x - 5, y + 3); }
+  else { ctx.roundRect(x - 11, y - 4, 22, 11, 3); ctx.rect(x - 6, y - 10, 12, 6); ctx.rect(x - 6, y + 4, 12, 7); }
+  ctx.stroke();
+}
+function sparkle(x, y, r, col, a){
+  const base = ctx.globalAlpha;
+  ctx.globalAlpha = base * a;
+  ctx.fillStyle = col;
+  ctx.beginPath();
+  for (let k = 0; k < 8; k++){
+    const ang = -Math.PI / 2 + k * Math.PI / 4, rad = k % 2 ? r * 0.35 : r;
+    ctx[k ? 'lineTo' : 'moveTo'](x + Math.cos(ang) * rad, y + Math.sin(ang) * rad);
+  }
+  ctx.closePath(); ctx.fill();
+  ctx.globalAlpha = base;
+}
+
+/* ---------- screen: SketchBox in Safari ---------- */
+function drawStatusBar(col){
+  ctx.fillStyle = col; ctx.strokeStyle = col;
+  ctx.font = `600 17px ${SYS}`; ctx.textAlign = 'left';
+  ctx.fillText('9:41', 44, 38);
+  for (let i = 0; i < 4; i++){ rr(SW - 112 + i * 7, 34 - (i + 1) * 3.2, 4.5, (i + 1) * 3.2, 1.2); ctx.fill(); }
+  ctx.lineWidth = 1.5; rr(SW - 72, 23, 30, 14, 4); ctx.stroke();
+  rr(SW - 69, 26, 24, 8, 2); ctx.fill();
+  rr(SW - 40, 27, 2.5, 6, 1); ctx.fill();
+}
+function drawSafariBar(){
+  const top = SH - 126;
+  ctx.fillStyle = 'rgba(247,247,248,0.98)'; ctx.fillRect(0, top, SW, 126);
+  ctx.fillStyle = 'rgba(0,0,0,0.12)'; ctx.fillRect(0, top, SW, 1);
+  ctx.fillStyle = '#E4E4E8'; rr(14, top + 10, SW - 28, 46, 14); ctx.fill();
+  ctx.fillStyle = '#1C1C1E'; ctx.font = `500 16px ${SYS}`; ctx.textAlign = 'center';
+  ctx.fillText('juqboxmusic.github.io', SW / 2, top + 39);
+  ctx.font = `600 15px ${SYS}`; ctx.textAlign = 'left'; ctx.fillText('AA', 30, top + 39);
+  const iy = top + 90;
+  chevron(SW * 0.1, iy, -1, BLUE);
+  chevron(SW * 0.3, iy, 1, '#B8B8BD');
+  shareIcon(SW * 0.5, iy, 28, BLUE);
+  bookIcon(SW * 0.7, iy, BLUE);
+  tabsIcon(SW * 0.9, iy, BLUE);
+  ctx.fillStyle = '#000'; rr(SW / 2 - 70, SH - 10, 140, 5, 3); ctx.fill();
+}
+function drawPage(){
+  ctx.fillStyle = '#FDF9F3'; ctx.fillRect(0, 0, SW, SH);
+  drawStatusBar('#000');
+  drawIcon(18, 62, 40, 10);
+  ctx.fillStyle = '#33404F'; ctx.font = `bold 24px ${ROUND}`; ctx.textAlign = 'left';
+  ctx.fillText('SketchBox', 68, 91);
+  ctx.fillStyle = '#EFE9DF'; rr(18, 118, SW - 36, 44, 22); ctx.fill();
+  ctx.fillStyle = '#fff'; rr(22, 122, 128, 36, 18); ctx.fill();
+  ctx.font = `bold 15px ${ROUND}`; ctx.textAlign = 'center';
+  ctx.fillStyle = '#E4573D'; ctx.fillText('Draw', 86, 146);
+  ctx.fillStyle = '#7A8699'; ctx.fillText('Pixel Art', 222, 146); ctx.fillText('Animate', 344, 146);
+  ctx.textAlign = 'left';
+  ctx.save();
+  ctx.shadowColor = 'rgba(51,64,79,0.14)'; ctx.shadowBlur = 18; ctx.shadowOffsetY = 6;
+  ctx.fillStyle = '#fff'; rr(18, 180, SW - 36, 440, 16); ctx.fill();
+  ctx.restore();
+  ctx.save();
+  rr(18, 180, SW - 36, 440, 16); ctx.clip();
+  ctx.fillStyle = '#8EDB8E'; ctx.beginPath(); ctx.ellipse(SW / 2, 640, 280, 90, 0, 0, 7); ctx.fill();
+  ['#EF4444', '#F97316', '#FACC15', '#22C55E', '#2563EB'].forEach((c, i) => {
+    stroke(c, 16);
+    ctx.beginPath(); ctx.arc(SW / 2 - 20, 560, 150 - i * 16, Math.PI * 1.02, Math.PI * 1.98); ctx.stroke();
+  });
+  ctx.fillStyle = '#FACC15'; ctx.beginPath(); ctx.arc(SW - 90, 250, 36, 0, 7); ctx.fill();
+  stroke('#FACC15', 6);
+  for (let i = 0; i < 8; i++){
+    const a = i * Math.PI / 4;
+    ctx.beginPath();
+    ctx.moveTo(SW - 90 + Math.cos(a) * 48, 250 + Math.sin(a) * 48);
+    ctx.lineTo(SW - 90 + Math.cos(a) * 62, 250 + Math.sin(a) * 62);
+    ctx.stroke();
+  }
+  ctx.restore();
+  const tw = 58, gap = 14, tx0 = (SW - (5 * tw + 4 * gap)) / 2;
+  for (let i = 0; i < 5; i++){
+    const x = tx0 + i * (tw + gap);
+    ctx.save();
+    ctx.shadowColor = 'rgba(51,64,79,0.10)'; ctx.shadowBlur = 10; ctx.shadowOffsetY = 3;
+    ctx.fillStyle = i === 0 ? '#E3EEFF' : '#fff'; rr(x, 640, tw, tw, 16); ctx.fill();
+    ctx.restore();
+    if (i === 0){ stroke('#4D96FF', 3); rr(x + 1.5, 641.5, tw - 3, tw - 3, 15); ctx.stroke(); }
+    ctx.fillStyle = i === 0 ? '#2563EB' : '#9CA3AF';
+    ctx.beginPath(); ctx.arc(x + tw / 2, 669, 9, 0, 7); ctx.fill();
+  }
+  ['#1F2937', '#EF4444', '#F97316', '#FACC15', '#22C55E', '#38BDF8', '#2563EB', '#8B5CF6', '#EC4899'].forEach((c, i) => {
+    ctx.fillStyle = c; ctx.beginPath(); ctx.arc(40 + i * 45, 738, 15, 0, 7); ctx.fill();
+  });
+  drawSafariBar();
+}
+
+/* ---------- share sheet ---------- */
+const SHEET_H = Math.round(SH * 0.72);
+const ROWS = ['Copy', 'Add to Reading List', 'Add Bookmark', 'Add to Favourites', 'Find on Page', 'Add to Home Screen', 'Markup', 'Print'];
+const HOME_ROW = 5, ROW_H = 58;
+const sheetScroll = t => -130 * easeInOut(prog(t, 5.0, 6.0));
+function homeRowCentre(t){
+  const ty = SH - SHEET_H;
+  const ly = ty + 122 + sheetScroll(t) + 112;
+  return ly + HOME_ROW * ROW_H + ROW_H / 2;
+}
+function drawShareSheet(t, rise){
+  ctx.fillStyle = `rgba(0,0,0,${0.28 * rise})`; ctx.fillRect(0, 0, SW, SH);
+  const ty = SH - SHEET_H * rise;
+  ctx.save();
+  ctx.shadowColor = 'rgba(0,0,0,0.2)'; ctx.shadowBlur = 20;
+  ctx.fillStyle = '#F2F2F7'; ctx.beginPath(); ctx.roundRect(0, ty, SW, SHEET_H + 40, [26, 26, 0, 0]); ctx.fill();
+  ctx.restore();
+  ctx.fillStyle = '#C7C7CC'; rr(SW / 2 - 20, ty + 7, 40, 5, 3); ctx.fill();
+  drawIcon(20, ty + 26, 58, 13);
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#1C1C1E'; ctx.font = `600 18px ${SYS}`; ctx.fillText('SketchBox', 92, ty + 51);
+  ctx.fillStyle = '#8E8E93'; ctx.font = `400 15px ${SYS}`; ctx.fillText('juqboxmusic.github.io', 92, ty + 73);
+  ctx.fillStyle = '#E3E3E8'; ctx.beginPath(); ctx.arc(SW - 38, ty + 48, 16, 0, 7); ctx.fill();
+  stroke('#8E8E93', 2.5);
+  ctx.beginPath(); ctx.moveTo(SW - 43, ty + 43); ctx.lineTo(SW - 33, ty + 53); ctx.moveTo(SW - 33, ty + 43); ctx.lineTo(SW - 43, ty + 53); ctx.stroke();
+  ctx.fillStyle = 'rgba(0,0,0,0.1)'; ctx.fillRect(0, ty + 104, SW, 1);
+  ctx.save();
+  ctx.beginPath(); ctx.rect(0, ty + 105, SW, SH - ty - 105); ctx.clip();
+  const y0 = ty + 122 + sheetScroll(t);
+  [['AirDrop', '#4FA8F8', true], ['Messages', '#34C759'], ['Mail', '#2F8CF7'], ['Notes', '#F7CE46']].forEach(([name, col, round], i) => {
+    const cx = 60 + i * 107;
+    ctx.fillStyle = col;
+    if (round){ ctx.beginPath(); ctx.arc(cx, y0 + 32, 32, 0, 7); ctx.fill(); }
+    else { rr(cx - 32, y0, 64, 64, 15); ctx.fill(); }
+    ctx.fillStyle = 'rgba(255,255,255,0.9)'; ctx.beginPath(); ctx.arc(cx, y0 + 32, 12, 0, 7); ctx.fill();
+    ctx.fillStyle = '#1C1C1E'; ctx.font = `400 13px ${SYS}`; ctx.textAlign = 'center';
+    ctx.fillText(name, cx, y0 + 84);
+  });
+  ctx.textAlign = 'left';
+  const ly = y0 + 112;
+  ctx.fillStyle = '#fff'; rr(16, ly, SW - 32, ROWS.length * ROW_H, 14); ctx.fill();
+  const pressed = t >= 7.2 && t < 7.8;
+  ROWS.forEach((label, i) => {
+    const ry = ly + i * ROW_H;
+    if (i === HOME_ROW && pressed){ ctx.fillStyle = '#D1D1D6'; ctx.fillRect(16, ry, SW - 32, ROW_H); }
+    if (i > 0){ ctx.fillStyle = 'rgba(60,60,67,0.18)'; ctx.fillRect(34, ry, SW - 50, 1); }
+    ctx.fillStyle = '#1C1C1E'; ctx.font = `400 17px ${SYS}`;
+    ctx.fillText(label, 34, ry + 36);
+    rowIcon(i, SW - 52, ry + ROW_H / 2);
+  });
+  if (t >= 6.0 && t < 7.25){
+    const g = 0.5 + 0.5 * Math.sin((t - 6) * 9);
+    stroke(`rgba(255,190,0,${0.55 + 0.4 * g})`, 5);
+    rr(14, ly + HOME_ROW * ROW_H - 2, SW - 28, ROW_H + 4, 14); ctx.stroke();
+  }
+  ctx.restore();
+}
+
+/* ---------- add to home screen dialog ---------- */
+const DIALOG_TOP = 54;
+function drawDialog(t, e){
+  ctx.fillStyle = `rgba(0,0,0,${0.25 * e})`; ctx.fillRect(0, 0, SW, SH);
+  const top = lerp(SH, DIALOG_TOP, e);
+  ctx.save();
+  ctx.shadowColor = 'rgba(0,0,0,0.25)'; ctx.shadowBlur = 24;
+  ctx.fillStyle = '#F2F2F7'; ctx.beginPath(); ctx.roundRect(0, top, SW, SH - top + 40, [24, 24, 0, 0]); ctx.fill();
+  ctx.restore();
+  const pressed = t >= 10.1 && t < 10.55;
+  ctx.textAlign = 'left'; ctx.font = `400 17px ${SYS}`; ctx.fillStyle = BLUE; ctx.fillText('Cancel', 20, top + 40);
+  ctx.textAlign = 'center'; ctx.font = `600 17px ${SYS}`; ctx.fillStyle = '#1C1C1E'; ctx.fillText('Add to Home Screen', SW / 2, top + 40);
+  ctx.textAlign = 'right'; ctx.fillStyle = pressed ? 'rgba(0,122,255,0.35)' : BLUE; ctx.fillText('Add', SW - 20, top + 40);
+  ctx.textAlign = 'left';
+  if (t >= 9.0 && t < 10.15){
+    const g = 0.5 + 0.5 * Math.sin((t - 9) * 9);
+    stroke(`rgba(255,190,0,${0.55 + 0.4 * g})`, 4);
+    rr(SW - 72, top + 14, 62, 38, 19); ctx.stroke();
+  }
+  ctx.fillStyle = '#fff'; rr(16, top + 78, SW - 32, 150, 14); ctx.fill();
+  drawIcon(30, top + 92, 80, 18);
+  ctx.fillStyle = '#1C1C1E'; ctx.font = `400 18px ${SYS}`; ctx.fillText('SketchBox', 126, top + 124);
+  ctx.fillStyle = '#C7C7CC'; ctx.beginPath(); ctx.arc(SW - 44, top + 118, 10, 0, 7); ctx.fill();
+  stroke('#fff', 2);
+  ctx.beginPath(); ctx.moveTo(SW - 48, top + 114); ctx.lineTo(SW - 40, top + 122); ctx.moveTo(SW - 40, top + 114); ctx.lineTo(SW - 48, top + 122); ctx.stroke();
+  ctx.fillStyle = 'rgba(60,60,67,0.2)'; ctx.fillRect(126, top + 148, SW - 142, 1);
+  ctx.fillStyle = '#8E8E93'; ctx.font = `400 15px ${SYS}`; ctx.fillText('juqboxmusic.github.io', 126, top + 180);
+  ctx.font = `400 14px ${SYS}`;
+  wrap('An icon will be added to your Home Screen so you can quickly access this website.', 24, top + 256, SW - 48, 19);
+}
+
+/* ---------- home screen ---------- */
+const APPS = [['Photos', '#FFB8C6'], ['Camera', '#9AA5B1'], ['Clock', '#2D3748'], ['Weather', '#63B3ED'],
+  ['Music', '#FC8181'], ['Maps', '#68D391'], ['Notes', '#F6E05E'], ['Books', '#F6AD55'],
+  ['Calendar', '#F687B3'], ['Settings', '#A0AEC0']];
+const ICON = 78;
+const homeSlot = i => ({ x: SW * ((i % 4) * 2 + 1) / 8, y: 96 + Math.floor(i / 4) * 124 });
+function drawAppIcon(cx, top, col){
+  ctx.fillStyle = col; rr(cx - ICON / 2, top, ICON, ICON, 18); ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,0.75)'; ctx.beginPath(); ctx.arc(cx, top + ICON / 2, ICON * 0.2, 0, 7); ctx.fill();
+}
+function drawHome(t){
+  const A = ctx.globalAlpha;
+  const g = ctx.createLinearGradient(0, 0, 0, SH);
+  g.addColorStop(0, '#8EC5FC'); g.addColorStop(0.55, '#C3B5FD'); g.addColorStop(1, '#FBC2EB');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, SW, SH);
+  drawStatusBar('#fff');
+  ctx.textAlign = 'center';
+  APPS.forEach(([n, c], i) => {
+    const s = homeSlot(i);
+    drawAppIcon(s.x, s.y, c);
+    ctx.fillStyle = '#fff'; ctx.font = `500 12.5px ${SYS}`;
+    ctx.fillText(n, s.x, s.y + ICON + 18);
+  });
+  const s = homeSlot(10);
+  const pop = prog(t, 11.4, 12.0);
+  if (pop > 0){
+    const press = t >= 13.7 && t < 14.0 ? 0.9 : 1;
+    const sc = easeBack(pop) * press;
+    const gl = prog(t, 11.6, 12.4) * (1 - prog(t, 13.4, 14.2));
+    ctx.save();
+    ctx.translate(s.x, s.y + ICON / 2); ctx.scale(sc, sc);
+    ctx.shadowColor = `rgba(255,214,10,${0.95 * gl})`; ctx.shadowBlur = 40 * gl;
+    ctx.fillStyle = '#fff'; rr(-ICON / 2, -ICON / 2, ICON, ICON, 18); ctx.fill();
+    ctx.shadowColor = 'transparent';
+    rr(-ICON / 2, -ICON / 2, ICON, ICON, 18); ctx.clip();
+    ctx.drawImage(icon, -ICON / 2, -ICON / 2, ICON, ICON);
+    ctx.restore();
+    ctx.globalAlpha = A * clamp(pop * 2);
+    ctx.fillStyle = '#fff'; ctx.font = `600 12.5px ${SYS}`;
+    ctx.fillText('SketchBox', s.x, s.y + ICON + 18);
+    ctx.globalAlpha = A;
+    const sp = prog(t, 11.7, 12.9);
+    if (sp > 0 && sp < 1){
+      const cols = ['#FFD93D', '#FF6B6B', '#4D96FF', '#6BCB77'];
+      for (let k = 0; k < 8; k++){
+        const a = k * Math.PI / 4 + 0.3, d = 50 + 60 * easeOut(sp);
+        sparkle(s.x + Math.cos(a) * d, s.y + ICON / 2 + Math.sin(a) * d, 9 * (1 - sp) + 4, cols[k % 4], 1 - sp);
+      }
+    }
+  }
+  ctx.fillStyle = 'rgba(255,255,255,0.32)'; rr(12, SH - 118, SW - 24, 98, 34); ctx.fill();
+  ['#68D391', '#63B3ED', '#F6E05E', '#FC8181'].forEach((c, i) => drawAppIcon(SW * (i * 2 + 1) / 8, SH - 108, c));
+  ctx.fillStyle = 'rgba(255,255,255,0.9)'; ctx.beginPath(); ctx.arc(SW / 2 - 8, SH - 136, 3.5, 0, 7); ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,0.45)'; ctx.beginPath(); ctx.arc(SW / 2 + 8, SH - 136, 3.5, 0, 7); ctx.fill();
+  ctx.fillStyle = '#fff'; rr(SW / 2 - 70, SH - 10, 140, 5, 3); ctx.fill();
+  ctx.textAlign = 'left';
+}
+
+/* ---------- phone & scene composition ---------- */
+function drawAppLayer(t){
+  drawPage();
+  const rise = easeOut(prog(t, 3.7, 4.3));
+  if (rise > 0) drawShareSheet(t, rise);
+  const dlg = easeOut(prog(t, 7.7, 8.3));
+  if (dlg > 0) drawDialog(t, dlg);
+}
+function drawScreen(t){
+  const home = easeInOut(prog(t, 10.55, 11.15));
+  const back = easeInOut(prog(t, 15.4, 16));
+  if (home < 1) drawAppLayer(t);
+  if (home > 0){
+    ctx.save();
+    ctx.globalAlpha = home;
+    const z = lerp(1.08, 1, home);
+    ctx.translate(SW / 2, SH / 2); ctx.scale(z, z); ctx.translate(-SW / 2, -SH / 2);
+    drawHome(t);
+    ctx.restore();
+  }
+  if (back > 0){
+    ctx.save(); ctx.globalAlpha = back; drawPage(); ctx.restore();
+  }
+}
+function drawPhone(t){
+  ctx.save();
+  ctx.shadowColor = 'rgba(0,0,0,0.25)'; ctx.shadowBlur = 40; ctx.shadowOffsetY = 16;
+  ctx.fillStyle = '#1C1C1E'; rr(PX, PY, PW, PH, 72); ctx.fill();
+  ctx.restore();
+  ctx.fillStyle = '#2C2C2E';
+  rr(PX - 4, PY + 190, 6, 70, 3); ctx.fill();
+  rr(PX + PW - 2, PY + 230, 6, 110, 3); ctx.fill();
+  ctx.save();
+  rr(SX, SY, SW, SH, 58); ctx.clip();
+  ctx.translate(SX, SY);
+  drawScreen(t);
+  ctx.restore();
+  ctx.fillStyle = '#000'; rr(SX + SW / 2 - 62, SY + 12, 124, 34, 17); ctx.fill();
+}
+
+/* ---------- finger taps ---------- */
+const TAPS = [
+  { appear: 1.9,  arrive: 3.0,  tap: 3.3,  leave: 3.7,   from: [SX + 380, SY + 640], to: () => [SX + SW * 0.5, SY + SH - 40] },
+  { appear: 6.0,  arrive: 6.9,  tap: 7.2,  leave: 7.6,   from: [SX + 360, SY + 520], to: t => [SX + SW * 0.72, SY + homeRowCentre(t)] },
+  { appear: 8.8,  arrive: 9.7,  tap: 10.1, leave: 10.45, from: [SX + 250, SY + 480], to: () => [SX + SW - 40, SY + DIALOG_TOP + 34] },
+  { appear: 13.0, arrive: 13.5, tap: 13.75, leave: 14.2, from: [SX + 330, SY + 640], to: () => { const s = homeSlot(10); return [SX + s.x, SY + s.y + ICON / 2]; } }
+];
+function drawTouches(t){
+  for (const k of TAPS){
+    if (t < k.appear || t > k.leave + 0.6) continue;
+    const m = easeInOut(prog(t, k.appear, k.arrive));
+    const [tx, ty] = k.to(t);
+    const x = lerp(k.from[0], tx, m), y = lerp(k.from[1], ty, m);
+    const a = Math.min(prog(t, k.appear, k.appear + 0.25), 1 - prog(t, k.leave, k.leave + 0.3));
+    const press = 1 - 0.25 * Math.max(0, 1 - Math.abs(t - k.tap) / 0.15);
+    const rp = prog(t, k.tap, k.tap + 0.55);
+    if (rp > 0 && rp < 1){
+      stroke(`rgba(77,150,255,${0.85 * (1 - rp)})`, 6);
+      ctx.beginPath(); ctx.arc(x, y, 30 + 52 * easeOut(rp), 0, 7); ctx.stroke();
+    }
+    if (a <= 0) continue;
+    ctx.save();
+    ctx.globalAlpha = a;
+    ctx.shadowColor = 'rgba(0,0,0,0.3)'; ctx.shadowBlur = 14; ctx.shadowOffsetY = 4;
+    ctx.fillStyle = 'rgba(255,255,255,0.72)'; ctx.beginPath(); ctx.arc(x, y, 32 * press, 0, 7); ctx.fill();
+    ctx.shadowColor = 'transparent';
+    stroke('rgba(51,64,79,0.6)', 4);
+    ctx.beginPath(); ctx.arc(x, y, 32 * press, 0, 7); ctx.stroke();
+    ctx.restore();
+  }
+}
+
+function render(t){
+  ctx.save();
+  drawBackground();
+  drawCaptions(t);
+  drawPhone(t);
+  drawTouches(t);
+  ctx.restore();
+}
+
+/* ---------- recording (WebCodecs H.264 → MP4) ---------- */
+async function record(){
+  await icon.decode();
+  const codec = 'avc1.64001f';
+  const config = { codec, width: VW, height: VH, bitrate: 2_600_000, framerate: FPS, avc: { format: 'avc' } };
+  // fresh full frames just after each fade, so no faded remnants carry over
+  const KEY_TIMES = [0.4, 1.85, 4.65, 8.65, 11.45, 15.68];
+  const isKey = i => i % 30 === 0 || KEY_TIMES.some(k => Math.abs(i / FPS - k) < 0.5 / FPS);
+  const support = await VideoEncoder.isConfigSupported(config);
+  if (!support.supported) throw new Error('H.264 encoding not supported here');
+  const muxer = new Mp4Muxer.Muxer({
+    target: new Mp4Muxer.ArrayBufferTarget(),
+    video: { codec: 'avc', width: VW, height: VH, frameRate: FPS },
+    fastStart: 'in-memory'
+  });
+  let failure = null;
+  const encoder = new VideoEncoder({
+    output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
+    error: e => { failure = e; }
+  });
+  encoder.configure(config);
+  const total = Math.round(DURATION * FPS);
+  for (let i = 0; i < total; i++){
+    render(i / FPS);
+    const frame = new VideoFrame(cv, { timestamp: Math.round(i * 1e6 / FPS), duration: Math.round(1e6 / FPS) });
+    encoder.encode(frame, { keyFrame: isKey(i) });
+    frame.close();
+    while (encoder.encodeQueueSize > 8) await new Promise(r => setTimeout(r, 5));
+    if (failure) throw failure;
+  }
+  await encoder.flush();
+  muxer.finalize();
+  const buf = muxer.target.buffer;
+  const res = await fetch('/save/install-safari.mp4', { method: 'POST', body: buf });
+  // small poster for when autoplay is blocked
+  render(0);
+  const pc = document.createElement('canvas');
+  pc.width = 360; pc.height = 640;
+  pc.getContext('2d').drawImage(cv, 0, 0, 360, 640);
+  const poster = await new Promise(r => pc.toBlob(r, 'image/png'));
+  await fetch('/save/install-safari-poster.png', { method: 'POST', body: poster });
+  return { bytes: buf.byteLength, frames: total, saved: res.ok };
+}
+
+/* ---------- preview UI ---------- */
+const scrub = document.getElementById('scrub');
+const status = document.getElementById('status');
+function show(t){ render(t); status.textContent = 't=' + t.toFixed(2) + 's'; }
+scrub.addEventListener('input', () => show(+scrub.value));
+icon.decode().then(() => show(0));
+window.render = render;
+window.show = show;
+window.record = record;
+</script>
+</body>
+</html>

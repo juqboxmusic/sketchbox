@@ -297,7 +297,13 @@ body.pixel .no-pixel{display:none}
 .confirm-emoji{font-size:44px;text-align:center}
 
 /* install popup */
-.install-sheet{align-items:center;text-align:center}
+.install-sheet{align-items:center;text-align:center;overflow-y:auto}
+.install-video{display:none;height:min(26dvh,300px);aspect-ratio:9/16;border-radius:18px;background:#FDF9F3;box-shadow:var(--shadow);flex-shrink:0}
+.install-sheet.ios{gap:12px}
+.install-sheet.ios .install-video{display:block}
+.install-sheet.ios .install-icon,
+.install-sheet.ios .install-sub{display:none}
+.install-sheet.ios .install-steps li{padding:9px 12px;font-size:14.5px}
 .install-sheet > .big-btn, .install-sheet > div{width:100%}
 .install-sheet h2{justify-content:center}
 .install-icon{width:84px;height:84px;border-radius:20px;box-shadow:var(--shadow-big);display:block}
@@ -602,6 +608,8 @@ body.pixel .no-pixel{display:none}
     <div id="installChrome">
       <button class="big-btn green" id="installGo" style="width:100%">📲 Install SketchBox</button>
     </div>
+    <video id="installVideo" class="install-video" src="install-safari.mp4" poster="install-safari-poster.png"
+      muted loop playsinline preload="none" aria-label="Animation showing how to add SketchBox to the Home Screen"></video>
     <ol class="install-steps" id="installIos">
       <li><span class="step-num">1</span><span>Tap the Share button
         <svg viewBox="0 0 24 24" fill="none" stroke="#2F7BF5" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-label="Share"><path d="M12 3v12"/><path d="M8 7l4-4 4 4"/><path d="M7 11H6a1 1 0 00-1 1v8a1 1 0 001 1h12a1 1 0 001-1v-8a1 1 0 00-1-1h-1"/></svg></span></li>
@@ -691,7 +699,11 @@ function toast(msg){
   toastTimer = setTimeout(() => t.classList.remove('show'), 1800);
 }
 function openModal(id){ $(id).classList.add('show'); }
-function closeModals(){ $$('.modal').forEach(m => m.classList.remove('show')); }
+function closeModals(){
+  $$('.modal').forEach(m => m.classList.remove('show'));
+  const iv = document.getElementById('installVideo');
+  if (iv && !iv.paused) iv.pause();
+}
 $$('.modal').forEach(m => {
   m.addEventListener('pointerdown', e => { if (e.target === m) closeModals(); });
 });
@@ -2448,7 +2460,13 @@ function showInstall(){
   $('#installIos').style.display = oneTap ? 'none' : 'flex';
   // home-screen apps on iOS get separate storage from Safari
   $('#installBackupHint').style.display = !oneTap && getGallery().length ? 'block' : 'none';
+  $('#installModal .install-sheet').classList.toggle('ios', !oneTap);
   openModal('#installModal');
+  if (!oneTap){
+    const v = $('#installVideo');
+    v.currentTime = 0;
+    v.play().catch(() => {}); // blocked autoplay just leaves the poster showing
+  }
 }
 function tryAutoOffer(){
   if (autoOffered || !autoOfferDue || installSnoozed() || !canOfferInstall()) return;

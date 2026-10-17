@@ -25,10 +25,12 @@ self.addEventListener('activate', e => {
 self.addEventListener('fetch', e => {
   const req = e.request;
   if (req.method !== 'GET' || new URL(req.url).origin !== self.location.origin) return;
+  // video playback uses partial (range) requests, which the cache can't store
+  if (req.headers.has('range')) return;
   e.respondWith(
     fetch(req)
       .then(res => {
-        if (res.ok){
+        if (res.status === 200){
           const copy = res.clone();
           caches.open(CACHE).then(c => c.put(req, copy));
         }
