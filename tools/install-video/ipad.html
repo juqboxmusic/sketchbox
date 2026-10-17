@@ -183,8 +183,8 @@ function drawPanel(t){
   ctx.fillStyle = '#7A8699'; ctx.font = `bold 30px ${ROUND}`;
   ctx.fillText('3 quick taps in Safari', 202, 212);
   for (let i = 0; i < 3; i++) drawStepCard(i, t);
-  // hint during step 1
-  const ha = prog(t, 3.4, 3.8) * (1 - prog(t, 6.1, 6.4));
+  // the ••• tip stays up until the all-done banner takes its place
+  const ha = prog(t, 3.4, 3.8) * (1 - prog(t, 13.9, 14.3));
   if (ha > 0){
     ctx.save();
     ctx.globalAlpha *= ha;
