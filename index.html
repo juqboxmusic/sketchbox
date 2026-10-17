@@ -642,7 +642,7 @@ const $$ = s => [...document.querySelectorAll(s)];
 let W = 1280, H = 960; // canvas size is per-document (see setCanvasDims)
 const SIZES_DRAW = [4, 10, 22, 42];
 const SIZES_PIX  = [1, 2, 3, 4];
-const GRID_SIZES = [8, 12, 16, 24, 32, 48];
+const GRID_SIZES = [8, 12, 16, 24, 32, 48, 64, 96];
 const FPS_STEPS  = [2, 4, 6, 12];
 const MAX_LAYERS = 3, MAX_FRAMES = 24, MAX_UNDO = 20;
 const PALETTE = [
@@ -731,6 +731,7 @@ function setCanvasDims(w, h){
   strokeC.width = W; strokeC.height = H;
   checkerPattern = null;
   markCanvasChips();
+  markGridChip();
   drawGrid();
   fitStage();
 }
@@ -839,11 +840,12 @@ function drawGrid(){
   gctx.clearRect(0, 0, W, H);
   if (state.tab !== 'pixel') return;
   const cell = W / state.grid, rows = Math.round(H / cell);
-  gctx.strokeStyle = 'rgba(51,64,79,0.10)';
+  // fine grids get fainter lines so the art isn't buried under them
+  gctx.strokeStyle = state.grid >= 64 ? 'rgba(51,64,79,0.06)' : 'rgba(51,64,79,0.10)';
   gctx.lineWidth = 1;
   gctx.beginPath();
-  for (let i = 1; i < state.grid; i++){ gctx.moveTo(i * cell, 0); gctx.lineTo(i * cell, H); }
-  for (let i = 1; i < rows; i++){ gctx.moveTo(0, i * cell); gctx.lineTo(W, i * cell); }
+  for (let i = 1; i < state.grid; i++){ const x = Math.round(i * cell) + 0.5; gctx.moveTo(x, 0); gctx.lineTo(x, H); }
+  for (let i = 1; i < rows; i++){ const y = Math.round(i * cell) + 0.5; gctx.moveTo(0, y); gctx.lineTo(W, y); }
   gctx.stroke();
 }
 
@@ -976,7 +978,11 @@ GRID_SIZES.forEach(n => {
   gridRow.appendChild(b);
 });
 function markGridChip(){
-  $$('#gridRow .chip').forEach(c => c.classList.toggle('on', +c.dataset.grid === state.grid));
+  $$('#gridRow .chip').forEach(c => {
+    const n = +c.dataset.grid;
+    c.textContent = n + '×' + Math.round(n * H / W);
+    c.classList.toggle('on', n === state.grid);
+  });
 }
 function setGridSize(n){
   if (n === state.grid) return;
@@ -1336,9 +1342,11 @@ function cellAt(p){
 function paintCellInto(ctx, cx, cy, erase){
   const cell = W / state.grid, k = SIZES_PIX[state.sizeIdx];
   const off = Math.floor((k - 1) / 2);
-  const x = (cx - off) * cell, y = (cy - off) * cell;
-  if (erase) ctx.clearRect(x, y, k * cell, k * cell);
-  else { ctx.fillStyle = state.color; ctx.fillRect(x, y, k * cell, k * cell); }
+  // whole-pixel edges: fractional cell sizes would leave faint seams between blocks
+  const x0 = Math.round((cx - off) * cell), y0 = Math.round((cy - off) * cell);
+  const x1 = Math.round((cx - off + k) * cell), y1 = Math.round((cy - off + k) * cell);
+  if (erase) ctx.clearRect(x0, y0, x1 - x0, y1 - y0);
+  else { ctx.fillStyle = state.color; ctx.fillRect(x0, y0, x1 - x0, y1 - y0); }
 }
 function lineCells(a, b, fn){
   let x0 = a.x, y0 = a.y;
